@@ -147,7 +147,7 @@ def process_pair(jf, df):
         UNMATCHED += 1
         return
     if status == "UNSAFE":
-        log("ERROR", "FAILURE source='%s' dest='%s' reason='unsafe or empty destination (contains ..)' - left in place"
+        log("ERROR", "FAILURE source='%s' dest='%s' reason='unsafe or empty destination' - left in place"
             % (df, result["dest"]))
         ERRORS += 1
         return

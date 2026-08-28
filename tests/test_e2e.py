@@ -570,6 +570,117 @@ class TestE2E(E2EBase):
         self.assertEqual(r.returncode, 3)
         self.exists(self.inc("a.xml"))
 
+    # --- logging coverage --------------------------------------------------
+
+    # 45: the run summary line is logged, with correct counts
+    def test_45_run_summary_logged(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch()
+        self.in_log("run summary: processed=1 unmatched=0 invalid=0 incomplete=0 unstable=0 errors=0")
+
+    # 46: a no-match line reports the JSON field values that were checked
+    def test_46_nomatch_logs_fields(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"other","group":"g"}')
+        self.dispatch()
+        self.in_log("no rule matched source=")
+        self.in_log("fields: category=other")
+
+    # 47: REQUIRED failure lists every missing field
+    def test_47_required_lists_all_missing(self):
+        self.write_conf('$category = "report" => "$OUT/r"', extra="REQUIRED = $a, $b")
+        self.mkpair("x", "xml", '{"category":"report"}')
+        self.dispatch()
+        self.in_log("missing/empty required field(s): a, b")
+
+    # 48: a duplicate setting is a WARNING, and the run still proceeds
+    def test_48_duplicate_setting_warns(self):
+        self.write_conf('$category = "report" => "$OUT/r"', extra="STABLE_SECONDS = 0")
+        self.mkpair("a", "xml", '{"category":"report"}')
+        r = self.dispatch()
+        self.assertEqual(r.returncode, 0)
+        self.in_log("duplicate setting 'STABLE_SECONDS'")
+        self.exists(self.op("r", "a.xml"))          # processing still happened
+
+    # 49: config errors go to errors.log and stderr (not only dispatch.log)
+    def test_49_config_error_channels(self):
+        self.write_raw(self.conf,
+                       'INCOMING_DIR = "%s"\nJSON_ARCHIVE_DIR = "%s"\nLOG_DIR = "%s"\n'
+                       'bogus line here\n' % (self.incoming, self.archive, self.logdir))
+        r = self.dispatch()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("config:", self.errlog())
+        self.assertIn("config:", r.stderr)
+        self.assertIn("config:", self.log())
+
+    # 50: a missing incoming directory is a logged error with exit code 1
+    def test_50_incoming_dir_missing(self):
+        missing = os.path.join(self.sb, "nope")
+        self.write_raw(self.conf,
+                       'INCOMING_DIR = "%s"\nJSON_ARCHIVE_DIR = "%s"\nLOG_DIR = "%s"\n'
+                       'STABLE_SECONDS = 0\n$category = "report" => "%s/r"\n'
+                       % (missing, self.archive, self.logdir, self.out))
+        r = self.dispatch()
+        self.assertEqual(r.returncode, 1)
+        self.in_log("incoming directory does not exist")
+
+    # 51: a destination that resolves to empty (undefined var) is refused
+    def test_51_empty_destination(self):
+        self.write_conf('$category = "report" => "$undefinedvar"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch()
+        self.exists(self.inc("a.xml"))
+        self.in_log("unsafe or empty destination")
+
+    # 52: every log line has an ISO timestamp and a level
+    def test_52_log_line_format(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch()
+        import re
+        pat = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4} \[(INFO|WARN|ERROR|DEBUG)\] ")
+        lines = [ln for ln in self.log().splitlines() if ln]
+        self.assertTrue(lines)
+        for ln in lines:
+            self.assertRegex(ln, pat)
+
+    # 53: archiving a JSON whose name already exists keeps the old one (suffix)
+    def test_53_archive_collision(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        os.makedirs(self.archive)
+        self.write_raw(os.path.join(self.archive, "a.json"), "OLD")
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch()
+        with open(os.path.join(self.archive, "a.json")) as f:
+            self.assertEqual(f.read(), "OLD")
+        suffixed = [n for n in os.listdir(self.archive) if n.startswith("a.json.")]
+        self.assertTrue(suffixed, "no suffixed archive copy created")
+
+    # 54: ${brace} variable syntax works in a destination
+    def test_54_brace_variable(self):
+        self.write_conf('$category = "report" => "$OUT/${group}/reports"')
+        self.mkpair("a", "xml", '{"category":"report","group":"B"}')
+        self.dispatch()
+        self.exists(self.op("B", "reports", "a.xml"))
+
+    # 55: errors.log carries FAILURE lines but not INFO (SUCCESS / summary)
+    def test_55_errorlog_levels(self):
+        self.write_conf('$category = "report" => "$OUT/blocked/sub"')
+        self.write_raw(self.op("blocked"), "X")
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch()
+        self.assertIn("FAILURE", self.errlog())
+        self.assertNotIn("run summary", self.errlog())
+        self.assertNotIn("SUCCESS", self.errlog())
+
+    # 56: --debug logs the pair being processed
+    def test_56_debug_processing_pair(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch("--debug")
+        self.in_log("processing pair: source=")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

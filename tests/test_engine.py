@@ -101,6 +101,24 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(r["status"], "REQUIRED_FAIL")
         self.assertEqual(r["missing"], ["group"])
 
+    def test_required_lists_all_missing(self):
+        cfg = self._config(self.BASE + "REQUIRED = $a, $b\n$category = \"r\" => \"/o\"\n")
+        self.assertEqual(self._resolve(cfg, {"category": "r"})["missing"], ["a", "b"])
+
+    def test_empty_destination_is_unsafe(self):
+        cfg = self._config(self.BASE + '$category = "r" => "$undefined"\n')
+        self.assertEqual(self._resolve(cfg, {"category": "r"})["status"], "UNSAFE")
+
+    def test_brace_and_single_quote_in_destination(self):
+        cfg = self._config(self.BASE + "$category = \"r\" => \"$OUT/${group}\"/'lit'\n")
+        self.assertEqual(self._resolve(cfg, {"category": "r", "group": "B"})["dest"], "/out/B/lit")
+
+    def test_nomatch_summary_contains_fields(self):
+        cfg = self._config(self.BASE + '$category = "report" => "/o"\n')
+        r = self._resolve(cfg, {"category": "other", "group": "g"})
+        self.assertEqual(r["status"], "NOMATCH")
+        self.assertIn("category=other", r["summary"])
+
     def test_unsafe_destination(self):
         cfg = self._config(self.BASE + 'D = "$group"\n$category = "r" => "$OUT/$D/x"\n')
         self.assertEqual(self._resolve(cfg, {"category": "r", "group": "../../etc"})["status"], "UNSAFE")
