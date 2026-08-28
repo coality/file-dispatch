@@ -1,0 +1,86 @@
+# =====================================================================
+#  File Dispatcher - single configuration file
+#  Copy this file to "dispatch.conf" and edit it. That's the only file
+#  you need to touch. Lines starting with # are comments.
+#
+#  Sections:  (1) Settings   (VALIDATION)   (2) Variables   (3) Rules
+#
+#  Style used below: string literals are always "quoted"; $field
+#  references stay bare; numbers are bare. Quoting a simple value is
+#  optional -- "report" and report are the same -- but quotes are
+#  REQUIRED when a value contains spaces or commas.
+# =====================================================================
+
+
+# --- 1) SETTINGS -----------------------------------------------------
+# Where incoming files arrive (each data file + its <base>.json sidecar).
+INCOMING_DIR     = "/data/incoming"
+
+# Single directory where every processed .json is archived (flat).
+JSON_ARCHIVE_DIR = "/data/archive/json"
+
+# Log file for all actions.
+LOG_FILE         = "/data/logs/dispatch.log"
+
+# (optional) A file must stay unchanged for this many seconds (its I/O
+# must have settled) before it is processed. Guards against files that
+# are still being copied. Default: 2.
+STABLE_SECONDS   = 2
+
+
+# --- VALIDATION (optional) -------------------------------------------
+# Before anything else, require these JSON fields to be present AND
+# non-empty. If any is missing or empty, the file is left in place and
+# an ERROR is logged. Leave it out to disable validation.
+# (These are field references, so they stay bare.)
+REQUIRED = $category, $group
+
+
+# --- 2) VARIABLES ----------------------------------------------------
+# "$name" means "the value of name". Every field of the current JSON is
+# available as a value: $category, $group, ... You can also DEFINE your
+# own values with "NAME = ..." (like a shell variable: NAME= to set,
+# $NAME to use). Definitions are evaluated top to bottom, so a variable
+# may reuse the ones above it.
+OUT     = "/data/out"
+GROUP   = "$group"
+REPORTS = "$OUT/Annual Reports"        # quotes -> spaces are fine; $ still expands
+TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
+
+
+# --- 3) RULES --------------------------------------------------------
+# A rule is:   <condition> => "<destination directory>"
+#
+#   condition atoms:
+#       $field = "value"                  equality (value may contain wildcards)
+#       $field IN ("a", "b", "c")         membership (any of the values)
+#   combine atoms with AND / OR           (AND is evaluated before OR)
+#   wildcard "*" inside a value           matches any run of characters:
+#                                         "invoice*", "*credit", "*" (= any value)
+#   the destination may use values too:   $OUT, $GROUP, $category, ...
+#
+# The FIRST rule that matches wins. If no rule matches, the file is left
+# in place and a "no rule matched" line is logged.
+#
+# ---- Rule cookbook (edit / delete freely) ---------------------------
+
+# Equality: category "report" goes under its group's reports folder.
+$category = "report"                              => "$OUT/$GROUP/reports"
+
+# Membership: several categories share one destination.
+$category IN ("invoice", "credit", "debit")       => "$OUT/$GROUP/billing"
+
+# Wildcard: any category that starts with "arch" (archive, archived, ...).
+$category = "arch*"                                => "$OUT/$GROUP/archive"
+
+# AND + IN: an export whose status is new or retry.
+$type = "export" AND $status IN ("new", "retry")  => "$OUT/exports"
+
+# OR: either a high priority or an urgent flag.
+$priority = "high" OR $flag = "urgent"            => "$OUT/$GROUP/urgent"
+
+# Quotes for spaces/commas in both the value and the destination.
+$status IN ("in progress", "on hold")             => "$OUT/$GROUP/pending files"
+
+# Composed destination built from JSON fields.
+$kind = "*"                                       => "$OUT/$GROUP/$kind"

@@ -1,0 +1,16 @@
+# Local configuration (copy dispatch.conf.example -> dispatch.conf)
+dispatch.conf
+
+# Runtime directories and files
+logs/
+incoming/
+archive/
+out/
+
+# Lock files
+*.lock
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
