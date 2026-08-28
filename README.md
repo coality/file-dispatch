@@ -16,42 +16,44 @@ someone who is not a programmer: everything lives in one plain config file.
 
 ## Requirements
 
-- `bash` >= 4
-- `python3` >= 3.6 (standard library only — nothing to `pip install`)
-- `flock` (from util-linux)
+Just two things, both present on virtually every Linux box out of the box:
 
-All three are available in every mainstream distribution's package repository
-(python3 and bash are usually already installed):
+- a POSIX shell at `/bin/sh` (only used by the tiny launcher)
+- `python3` >= 3.6 (**standard library only** — nothing to `pip install`)
 
-| Distro           | Install command                       |
-|------------------|---------------------------------------|
-| Debian / Ubuntu  | `sudo apt install python3 util-linux` |
-| RHEL / Fedora    | `sudo dnf install python3 util-linux` |
-| openSUSE         | `sudo zypper install python3 util-linux` |
-| Arch             | `sudo pacman -S python util-linux`    |
-| Alpine           | `sudo apk add bash python3 util-linux` |
+That's it — no `jq`, no `flock`, no coreutils commands: the program does the
+locking (`fcntl`), file moves (`shutil`), timing, JSON parsing, etc. all in
+Python. `lsof` is **optional**: if installed it is used as an extra "file is open
+for writing" check, but everything works fine without it.
 
-`mv`, `mkdir`, `stat`, `date`, `sleep` (all coreutils) are used too and are always
-present. `lsof` is **optional**: if it happens to be installed it is used as an
-extra "file is open for writing" check, but the script works fine without it.
+If Python isn't already there:
+
+| Distro           | Install command             |
+|------------------|-----------------------------|
+| Debian / Ubuntu  | `sudo apt install python3`   |
+| RHEL / Fedora    | `sudo dnf install python3`   |
+| openSUSE         | `sudo zypper install python3` |
+| Arch             | `sudo pacman -S python`      |
+| Alpine           | `sudo apk add python3`       |
 
 You can pin which Python to use with the `PYTHON` setting (see below) or the
 `DISPATCH_PYTHON` environment variable; otherwise `python3` from `PATH` is used.
 
 ## Architecture
 
-Two files, a clean split:
+Three files, a clean split — almost everything is Python:
 
-- **`dispatch.sh`** — the orchestrator (Bash): CLI, the cron lock, scanning the
-  incoming directory, pairing files, the I/O-stability check, moving files, and
-  logging.
-- **`engine.py`** — the engine (Python, stdlib only): parsing the config DSL, the
-  rule grammar (`AND`/`OR`/`IN`/wildcards/quotes/concatenation), variable
-  expansion, and matching a JSON file against the rules. Python also reads the
-  JSON (which is why `jq` is not needed).
+- **`dispatch.sh`** — a ~15-line POSIX-shell **launcher**. Its only job is to pick
+  the Python interpreter and hand off to `dispatch.py`.
+- **`dispatch.py`** — the **program** (Python, stdlib only): CLI, config
+  resolution, the cron lock, scanning the incoming directory, pairing files, the
+  I/O-stability check, moving files, and logging.
+- **`engine.py`** — the **engine** (Python, stdlib only, unit-tested): parsing the
+  config DSL, the rule grammar (`AND`/`OR`/`IN`/wildcards/quotes/concatenation),
+  variable expansion, and matching a JSON file against the rules.
 
-The pipeline each run: **parse → preflight → pair → stabilize → resolve (engine)
-→ move**. The two talk over a small tab-separated line protocol.
+The pipeline each run: **parse → preflight → pair → stabilize → resolve → move**.
+Run it via `./dispatch.sh …` (or directly with `python3 dispatch.py …`).
 
 ## Setup
 

@@ -1,37 +1,23 @@
 #!/usr/bin/env python3
 """
-file-dispatch engine: the parsing / matching core.
+file-dispatch engine: the parsing / matching core (a pure library).
 
-The Bash orchestrator (dispatch.sh) handles cron, locking, file pairing, I/O
-stability, moving files and logging. Everything that is fiddly -- parsing the
-config DSL, the rule grammar (AND / OR / IN / wildcards / quotes / concatenation),
-variable expansion and matching a JSON file against the rules -- lives here,
-where it is far easier to read and unit-test than in shell.
+dispatch.py (the orchestrator) imports this module. Everything that is fiddly --
+parsing the config DSL, the rule grammar (AND / OR / IN / wildcards / quotes /
+concatenation), variable expansion and matching a JSON file against the rules --
+lives here, where it is easy to read and unit-test (see tests/test_engine.py).
 
-Standard library only. Two subcommands, both talking to Bash over a simple
-tab-separated line protocol on stdout:
+Main entry points:
+  Config().parse(path); Config().validate()   -> fills .settings/.vars/.rules,
+                                                  .errors, .warnings
+  Config().resolve(jsonfile, debug)            -> {status, dest, ruleno, ...}
 
-  engine.py load <config>
-      Parse + validate the config. Emits:
-        SET<TAB>KEY<TAB>VALUE      (one per setting; REQUIRED as space list)
-        WARN<TAB>message           (zero or more)
-        ERR<TAB>message            (zero or more)
-        STATUS<TAB>OK | STATUS<TAB>FAIL
-
-  engine.py resolve <config> <jsonfile> [--debug]
-      Resolve one pair. Emits (in order):
-        D<TAB>trace line           (only with --debug)
-        status<TAB>OK|NOMATCH|INVALID|REQUIRED_FAIL|UNSAFE|ERROR
-        dest<TAB>path              (OK, UNSAFE)
-        ruleno<TAB>n / ruletext<TAB>text   (OK)
-        missing<TAB>f1 f2          (REQUIRED_FAIL)
-        summary<TAB>fields: ...    (NOMATCH)
+Standard library only.
 """
 
 import fnmatch
 import json
 import re
-import sys
 
 RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
@@ -435,75 +421,3 @@ class Config:
             parts.append("%s=%s" % (k, ctx.get(k, "")))
             count += 1
         return "fields: " + ", ".join(parts)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-def cmd_load(path):
-    cfg = Config()
-    cfg.parse(path)
-    cfg.validate()
-    out = sys.stdout
-    for key in ("INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR", "STABLE_SECONDS"):
-        out.write("SET\t%s\t%s\n" % (key, sanitize(cfg.settings.get(key, ""))))
-    out.write("SET\tREQUIRED\t%s\n" % sanitize(" ".join(cfg.required)))
-    out.write("SET\tPYTHON\t%s\n" % sanitize(cfg.settings.get("PYTHON", "")))
-    for w in cfg.warnings:
-        out.write("WARN\t%s\n" % sanitize(w))
-    for e in cfg.errors:
-        out.write("ERR\t%s\n" % sanitize(e))
-    out.write("STATUS\t%s\n" % ("FAIL" if cfg.errors else "OK"))
-    return 2 if cfg.errors else 0
-
-
-def cmd_resolve(path, jsonfile, debug):
-    cfg = Config()
-    cfg.parse(path)
-    cfg.validate()
-    out = sys.stdout
-    if cfg.errors:
-        out.write("status\tERROR\n")
-        return 0
-    r = cfg.resolve(jsonfile, debug)
-    if debug:
-        for line in r.get("debug", []):
-            out.write("D\t%s\n" % sanitize(line))
-    out.write("status\t%s\n" % r["status"])
-    if r["status"] == "OK":
-        out.write("dest\t%s\n" % sanitize(r["dest"]))
-        out.write("ruleno\t%s\n" % r["ruleno"])
-        out.write("ruletext\t%s\n" % sanitize(r["ruletext"]))
-    elif r["status"] == "UNSAFE":
-        out.write("dest\t%s\n" % sanitize(r["dest"]))
-    elif r["status"] == "REQUIRED_FAIL":
-        out.write("missing\t%s\n" % sanitize(" ".join(r["missing"])))
-    elif r["status"] == "NOMATCH":
-        out.write("summary\t%s\n" % sanitize(r["summary"]))
-    return 0
-
-
-def main(argv):
-    if not argv:
-        sys.stderr.write("usage: engine.py {load|resolve} ...\n")
-        return 2
-    cmd = argv[0]
-    if cmd == "load":
-        if len(argv) < 2:
-            sys.stderr.write("usage: engine.py load <config>\n")
-            return 2
-        return cmd_load(argv[1])
-    if cmd == "resolve":
-        rest = argv[1:]
-        debug = "--debug" in rest
-        rest = [a for a in rest if a != "--debug"]
-        if len(rest) < 2:
-            sys.stderr.write("usage: engine.py resolve <config> <jsonfile> [--debug]\n")
-            return 2
-        return cmd_resolve(rest[0], rest[1], debug)
-    sys.stderr.write("unknown command: %s\n" % cmd)
-    return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

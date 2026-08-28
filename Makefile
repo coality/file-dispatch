@@ -14,8 +14,8 @@ lint:
 	else \
 		echo "shellcheck not installed; skipping shell lint"; \
 	fi
-	@bash -n dispatch.sh tests/run_tests.sh && echo "bash syntax OK"
-	@python3 -m py_compile engine.py tests/test_engine.py && echo "python compile OK"
+	@sh -n dispatch.sh && bash -n tests/run_tests.sh && echo "shell syntax OK"
+	@python3 -m py_compile dispatch.py engine.py tests/test_engine.py && echo "python compile OK"
 
 check:
 	./dispatch.sh --check dispatch.conf.example
