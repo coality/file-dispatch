@@ -10,6 +10,10 @@ out/
 # Lock files
 *.lock
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Editor / OS noise
 *.swp
 *~

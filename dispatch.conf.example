@@ -41,6 +41,10 @@ LOG_DIR          = "/data/logs"
 # are still being copied. Default: 2.
 STABLE_SECONDS   = 2
 
+# (optional) Path to the Python 3 interpreter used by the engine.
+# Leave it out to use "python3" from PATH (or the $DISPATCH_PYTHON env var).
+# PYTHON         = "/usr/bin/python3"
+
 
 # --- VALIDATION (optional) -------------------------------------------
 # Before anything else, require these JSON fields to be present AND

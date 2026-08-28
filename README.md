@@ -17,23 +17,41 @@ someone who is not a programmer: everything lives in one plain config file.
 ## Requirements
 
 - `bash` >= 4
-- `jq`
+- `python3` >= 3.6 (standard library only — nothing to `pip install`)
 - `flock` (from util-linux)
 
-All three are available in every mainstream distribution's package repository:
+All three are available in every mainstream distribution's package repository
+(python3 and bash are usually already installed):
 
-| Distro           | Install command              |
-|------------------|------------------------------|
-| Debian / Ubuntu  | `sudo apt install jq util-linux` |
-| RHEL / Fedora    | `sudo dnf install jq util-linux` |
-| openSUSE         | `sudo zypper install jq util-linux` |
-| Arch             | `sudo pacman -S jq util-linux` |
-| Alpine           | `sudo apk add bash jq util-linux` |
+| Distro           | Install command                       |
+|------------------|---------------------------------------|
+| Debian / Ubuntu  | `sudo apt install python3 util-linux` |
+| RHEL / Fedora    | `sudo dnf install python3 util-linux` |
+| openSUSE         | `sudo zypper install python3 util-linux` |
+| Arch             | `sudo pacman -S python util-linux`    |
+| Alpine           | `sudo apk add bash python3 util-linux` |
 
 `mv`, `mkdir`, `stat`, `date`, `sleep` (all coreutils) are used too and are always
 present. `lsof` is **optional**: if it happens to be installed it is used as an
 extra "file is open for writing" check, but the script works fine without it.
-No other command is required — no `awk`, `sed`, `find`, `basename`, `dirname`.
+
+You can pin which Python to use with the `PYTHON` setting (see below) or the
+`DISPATCH_PYTHON` environment variable; otherwise `python3` from `PATH` is used.
+
+## Architecture
+
+Two files, a clean split:
+
+- **`dispatch.sh`** — the orchestrator (Bash): CLI, the cron lock, scanning the
+  incoming directory, pairing files, the I/O-stability check, moving files, and
+  logging.
+- **`engine.py`** — the engine (Python, stdlib only): parsing the config DSL, the
+  rule grammar (`AND`/`OR`/`IN`/wildcards/quotes/concatenation), variable
+  expansion, and matching a JSON file against the rules. Python also reads the
+  JSON (which is why `jq` is not needed).
+
+The pipeline each run: **parse → preflight → pair → stabilize → resolve (engine)
+→ move**. The two talk over a small tab-separated line protocol.
 
 ## Setup
 
@@ -105,6 +123,7 @@ INCOMING_DIR     = "/data/incoming"      # directory to watch
 JSON_ARCHIVE_DIR = "/data/archive/json"  # where every processed .json goes
 LOG_DIR          = "/data/logs"          # logs folder (see below)
 STABLE_SECONDS   = 2                     # optional: I/O-settle delay (default 2)
+# PYTHON         = "/usr/bin/python3"    # optional: interpreter for the engine
 ```
 
 `LOG_DIR` is a **folder** that holds two files:
@@ -253,10 +272,17 @@ trusted (written by the operator). The script:
 ./tests/run_tests.sh
 ```
 
-A self-contained suite (no external framework) that builds an isolated sandbox per
-case and checks the full functional scope: routing, variables, operators
-(`=`, `IN`, `AND`, `OR`, `*`), quoting and concatenation, validation, incomplete
-pairs, I/O stability, idempotence, config preflight, and the security guards.
+Two layers, no external framework:
+
+- **`tests/test_engine.py`** — Python unit tests for the engine's pure functions
+  (tokenizer, `assemble_value`, `parse_atom`, and resolution scenarios).
+- **`tests/run_tests.sh`** — end-to-end tests that build an isolated sandbox per
+  case and check the full functional scope: routing, variables, operators
+  (`=`, `IN`, `AND`, `OR`, `*`), quoting and concatenation, validation, incomplete
+  pairs, I/O stability, idempotence, config preflight, `--dry-run`/`--debug`,
+  the `PYTHON`/config resolution, and the security guards.
+
+`run_tests.sh` runs the unit tests first, then the end-to-end cases.
 
 ## License
 

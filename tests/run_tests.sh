@@ -597,13 +597,41 @@ $category = "report" => "$OUT/$GROUP/reports"'
     cleanup
 }
 
+t43() {
+    CURRENT="43 PYTHON setting selects the interpreter"; new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    printf 'PYTHON = "%s"\n' "$(command -v python3)" >> "$CONF"
+    mkpair a xml '{"category":"report"}'
+    run_dispatch
+    a_rc 0
+    a_exists "$OUT/r/a.xml"
+    cleanup
+}
+
+t44() {
+    CURRENT="44 bad PYTHON path -> exit 3, nothing processed"; new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    printf 'PYTHON = "/nonexistent/python-xyz"\n' >> "$CONF"
+    mkpair a xml '{"category":"report"}'
+    run_dispatch
+    a_rc 3
+    a_exists "$IN/a.xml"
+    cleanup
+}
+
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
 main() {
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "jq is required to run the tests" >&2; exit 3
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 is required to run the tests" >&2; exit 3
     fi
+
+    # Python unit tests for the engine's parsing / matching core.
+    printf '%sengine unit tests (python)%s\n' "$BOLD" "$RESET"
+    if python3 "$HERE/test_engine.py"; then ok "engine unit tests passed"; else ko "engine unit tests failed"; fi
+
+    # End-to-end tests.
     local tests
     tests=$(declare -F | awk '{print $3}' | grep -E '^t[0-9]{2}$' | sort)
     local t
