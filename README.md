@@ -49,11 +49,14 @@ REQUIRED         = $category, $group     # optional: fields that must be present
 your own with `NAME = ...` and reuse it as `$NAME`. Quote values/paths that
 contain spaces or commas; a simple value can be quoted or not.
 
-Variables build paths (top to bottom, adjacent pieces concatenate):
+Variables build paths (top to bottom, adjacent pieces concatenate). A value may
+also be a **Python-style ternary** `A if <condition> else B` (chainable, using the
+same operators as rules):
 
 ```ini
 OUT   = "/data/out"
 GROUP = "$group"
+BU    = "core" if $category = "central" else $category
 ```
 
 Rules — `condition => "destination directory"`, **first match wins**:

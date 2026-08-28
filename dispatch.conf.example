@@ -64,6 +64,12 @@ OUT     = "/data/out"
 GROUP   = "$group"
 REPORTS = "$OUT/Annual Reports"        # quotes -> spaces are fine; $ still expands
 TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
+#
+# A value can also be a Python-style ternary:  A if <condition> else B
+# The <condition> uses the same operators as rules (=, ==, IN, AND, OR, ( )).
+# Ternaries chain like if/elif/else.
+BU      = "core" if $category = "central" else $category
+TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 
 
 # --- 3) RULES --------------------------------------------------------

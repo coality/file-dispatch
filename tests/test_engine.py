@@ -68,6 +68,20 @@ class TestHelpers(unittest.TestCase):
             with self.assertRaises(engine.ConditionError):
                 engine.parse_condition(bad)
 
+    def test_parse_vexpr(self):
+        self.assertEqual(engine.parse_vexpr('"a"'), ("val", '"a"'))
+        node = engine.parse_vexpr('"a" if $x = "1" else "b"')
+        self.assertEqual(node[0], "tern")
+        self.assertEqual(node[3][0], "val")             # else branch is a plain value
+        chained = engine.parse_vexpr('"a" if $k = "1" else "b" if $k = "2" else "c"')
+        self.assertEqual(chained[0], "tern")
+        self.assertEqual(chained[3][0], "tern")         # nested ternary in the else branch
+        with self.assertRaises(engine.ConditionError):
+            engine.parse_vexpr('"a" if $k = "1"')        # missing else
+
+    def test_atom_accepts_double_equals(self):
+        self.assertEqual(engine.parse_atom('$x == "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
+
 
 class TestResolve(unittest.TestCase):
     def _config(self, text):
@@ -155,6 +169,32 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(self._resolve(cfg, {"t": "x", "u": "y"})["status"], "OK")
         self.assertEqual(self._resolve(cfg, {"s": "z", "u": "y"})["status"], "NOMATCH")
 
+    def test_ternary_variable(self):
+        cfg = self._config(self.BASE + 'BU = "core" if $unit = "central" else $unit\n'
+                                       '$category = "x" => "$OUT/$BU"\n')
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(self._resolve(cfg, {"category": "x", "unit": "central"})["dest"], "/out/core")
+        self.assertEqual(self._resolve(cfg, {"category": "x", "unit": "north"})["dest"], "/out/north")
+
+    def test_ternary_python_eq_and_or(self):
+        cfg = self._config(self.BASE + 'E = "prod" if $host == "p1" OR $host == "p2" else "dev"\n'
+                                       '$category = "x" => "$OUT/$E"\n')
+        self.assertEqual(self._resolve(cfg, {"category": "x", "host": "p2"})["dest"], "/out/prod")
+        self.assertEqual(self._resolve(cfg, {"category": "x", "host": "z"})["dest"], "/out/dev")
+
+    def test_ternary_chained(self):
+        cfg = self._config(self.BASE + 'G = "a" if $k = "1" else "b" if $k = "2" else "c"\n'
+                                       '$category = "x" => "$OUT/$G"\n')
+        self.assertEqual(self._resolve(cfg, {"category": "x", "k": "1"})["dest"], "/out/a")
+        self.assertEqual(self._resolve(cfg, {"category": "x", "k": "2"})["dest"], "/out/b")
+        self.assertEqual(self._resolve(cfg, {"category": "x", "k": "9"})["dest"], "/out/c")
+
+    def test_ternary_grouped_condition(self):
+        cfg = self._config(self.BASE + 'T = "gold" if ($amt = "high" AND $vip = "yes") else "std"\n'
+                                       '$category = "x" => "$OUT/$T"\n')
+        self.assertEqual(self._resolve(cfg, {"category": "x", "amt": "high", "vip": "yes"})["dest"], "/out/gold")
+        self.assertEqual(self._resolve(cfg, {"category": "x", "amt": "high", "vip": "no"})["dest"], "/out/std")
+
     def test_unsafe_destination(self):
         cfg = self._config(self.BASE + 'D = "$group"\n$category = "r" => "$OUT/$D/x"\n')
         self.assertEqual(self._resolve(cfg, {"category": "r", "group": "../../etc"})["status"], "UNSAFE")
@@ -203,6 +243,11 @@ class TestConfigErrors(unittest.TestCase):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
                           '$a = "x") => "/o"\n')
         self.assertTrue(any("condition" in e for e in cfg.errors), cfg.errors)
+
+    def test_ternary_missing_else(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          'X = "a" if $k = "1"\n')
+        self.assertTrue(any("else" in e for e in cfg.errors), cfg.errors)
 
 
 if __name__ == "__main__":

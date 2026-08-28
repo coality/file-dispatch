@@ -206,7 +206,10 @@ def parse_atom(atom):
             return None
         return {"op": "IN", "field": name, "items": items}
     if rest.startswith("="):
-        rhs = rest[1:].strip()
+        rest = rest[1:]
+        if rest.startswith("="):        # accept Python-style '=='
+            rest = rest[1:]
+        rhs = rest.strip()
         if rhs == "":
             return None
         return {"op": "EQ", "field": name, "rhs": rhs}
@@ -342,6 +345,79 @@ def _parse_factor(toks, pos):
     raise ConditionError("unexpected '%s' in condition" % _tok_str(t))
 
 
+def atom_matches(at, ctx):
+    """Evaluate a parsed atom against ctx (used by rules and ternary conditions)."""
+    lval = ctx.get(at["field"], "")
+    if at["op"] == "EQ":
+        return fnmatch.fnmatchcase(lval, assemble_value(at["rhs"], ctx))
+    return any(fnmatch.fnmatchcase(lval, assemble_value(it, ctx)) for it in at["items"])
+
+
+def eval_condition_ast(node, ctx):
+    kind = node[0]
+    if kind == "ATOM":
+        return atom_matches(node[1], ctx)
+    if kind == "AND":
+        return eval_condition_ast(node[1], ctx) and eval_condition_ast(node[2], ctx)
+    if kind == "OR":
+        return eval_condition_ast(node[1], ctx) or eval_condition_ast(node[2], ctx)
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# Variable value expression: a plain value, or a Python-style ternary
+#   <value> if <condition> else <value>      (nestable, like if/elif/else)
+# --------------------------------------------------------------------------- #
+def find_top_level(s, sep):
+    """Index of the first `sep` at paren-depth 0 and outside quotes, or None."""
+    i, n, q, depth, sl = 0, len(s), None, 0, len(sep)
+    while i < n:
+        c = s[i]
+        if q:
+            if c == q:
+                q = None
+            i += 1; continue
+        if c in ('"', "'"):
+            q = c; i += 1; continue
+        if c == "(":
+            depth += 1; i += 1; continue
+        if c == ")":
+            if depth > 0:
+                depth -= 1
+            i += 1; continue
+        if depth == 0 and s[i:i + sl] == sep:
+            return i
+        i += 1
+    return None
+
+
+def parse_vexpr(expr):
+    """Parse a variable value expression. Returns:
+         ('val', raw)                              a plain value
+         ('tern', raw_true, cond_ast, else_node)   a ternary
+    Raises ConditionError on a malformed ternary or condition.
+    """
+    idx = find_top_level(expr, " if ")
+    if idx is None:
+        return ("val", expr)
+    value_true = expr[:idx]
+    rest = expr[idx + 4:]
+    eidx = find_top_level(rest, " else ")
+    if eidx is None:
+        raise ConditionError("ternary 'if' without matching 'else' in '%s'" % expr.strip())
+    cond = rest[:eidx].strip()
+    return ("tern", value_true, parse_condition(cond), parse_vexpr(rest[eidx + 6:]))
+
+
+def eval_vexpr(node, ctx):
+    if node[0] == "val":
+        return assemble_value(node[1], ctx)
+    _, value_true, cond_ast, else_node = node
+    if eval_condition_ast(cond_ast, ctx):
+        return assemble_value(value_true, ctx)
+    return eval_vexpr(else_node, ctx)
+
+
 # --------------------------------------------------------------------------- #
 # Config model
 # --------------------------------------------------------------------------- #
@@ -349,7 +425,7 @@ class Config:
     def __init__(self):
         self.settings = {"STABLE_SECONDS": "2"}
         self.required = []
-        self.vars = []          # list of (name, expr) in file order
+        self.vars = []          # list of (name, vexpr node) in file order
         self.rules = []         # list of {lineno, text, cond, dest}
         self.errors = []
         self.warnings = []
@@ -375,7 +451,12 @@ class Config:
                     if name in RESERVED:
                         self._assign_setting(name, val, lineno)
                     elif IDENT_RE.fullmatch(name):
-                        self.vars.append((name, val))
+                        try:
+                            node = parse_vexpr(val)
+                        except ConditionError as exc:
+                            self.errors.append("line %d: %s" % (lineno, exc))
+                            node = ("val", val)
+                        self.vars.append((name, node))
                     else:
                         self.errors.append("line %d: invalid variable name '%s'" % (lineno, name))
                 else:
@@ -458,8 +539,8 @@ class Config:
         if missing:
             return {"status": "REQUIRED_FAIL", "missing": missing, "debug": trace}
 
-        for name, expr in self.vars:
-            ctx[name] = assemble_value(expr, ctx)
+        for name, node in self.vars:
+            ctx[name] = eval_vexpr(node, ctx)
             if debug:
                 trace.append("  variable: %s = '%s'" % (name, ctx[name]))
 
