@@ -270,21 +270,22 @@ trusted (written by the operator). The script:
 
 ## Tests
 
+All tests are Python (`unittest`, standard library — nothing to install):
+
 ```sh
-./tests/run_tests.sh
+python3 -m unittest discover -s tests
 ```
 
-Two layers, no external framework:
+Two layers:
 
-- **`tests/test_engine.py`** — Python unit tests for the engine's pure functions
+- **`tests/test_engine.py`** — unit tests for the engine's pure functions
   (tokenizer, `assemble_value`, `parse_atom`, and resolution scenarios).
-- **`tests/run_tests.sh`** — end-to-end tests that build an isolated sandbox per
-  case and check the full functional scope: routing, variables, operators
-  (`=`, `IN`, `AND`, `OR`, `*`), quoting and concatenation, validation, incomplete
-  pairs, I/O stability, idempotence, config preflight, `--dry-run`/`--debug`,
-  the `PYTHON`/config resolution, and the security guards.
-
-`run_tests.sh` runs the unit tests first, then the end-to-end cases.
+- **`tests/test_e2e.py`** — end-to-end tests that build an isolated sandbox per
+  case and run the real entry point (`./dispatch.sh`) as a subprocess, checking
+  the full functional scope: routing, variables, operators (`=`, `IN`, `AND`,
+  `OR`, `*`), quoting and concatenation, validation, incomplete pairs, I/O
+  stability, idempotence, config preflight, `--dry-run`/`--debug`, the
+  `PYTHON`/config resolution, and the security guards.
 
 ## License
 
