@@ -9,6 +9,13 @@
 #  references stay bare; numbers are bare. Quoting a simple value is
 #  optional -- "report" and report are the same -- but quotes are
 #  REQUIRED when a value contains spaces or commas.
+#
+#  How to run:
+#    ./dispatch.sh --check     validate this config, then exit (0 = OK)
+#    ./dispatch.sh --dry-run   log what WOULD happen but move NOTHING;
+#                              every log line is prefixed with "DRY-RUN".
+#                              Use it to preview a config before going live.
+#    ./dispatch.sh             process for real (this is what cron runs)
 # =====================================================================
 
 
