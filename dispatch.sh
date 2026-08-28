@@ -4,7 +4,8 @@
 # the metadata carried by their JSON sidecar, driven by a single config file.
 #
 # Usage:
-#   dispatch.sh [CONFIG]     process the incoming directory once (meant for cron)
+#   dispatch.sh [CONFIG]           process the incoming directory once (meant for cron)
+#   dispatch.sh --dry-run [CONFIG] log what would happen, but move nothing
 #   dispatch.sh --check [CONFIG]   validate the config and exit (0 = OK)
 #   dispatch.sh --help
 #
@@ -32,9 +33,13 @@ unset _src _dir
 # Settings (filled by the config)
 INCOMING_DIR=""
 JSON_ARCHIVE_DIR=""
-LOG_FILE=""
+LOG_DIR=""
 STABLE_SECONDS="2"
 declare -a REQUIRED_FIELDS=()
+
+# Derived from LOG_DIR: the two log files
+LOG_FILE=""     # $LOG_DIR/dispatch.log  (all actions)
+ERROR_LOG=""    # $LOG_DIR/errors.log    (WARN + ERROR only)
 
 # Parsed variables (ordered) and rules (ordered)
 declare -a VAR_NAMES=() VAR_EXPRS=()
@@ -59,6 +64,7 @@ EQ_NAME=""; EQ_VAL=""
 PROCESSED=0; UNMATCHED=0; INVALID=0; INCOMPLETE=0; UNSTABLE=0; ERRORS=0
 
 CHECK_ONLY=0
+DRY_RUN=0
 CONFIG_PATH=""
 
 # --------------------------------------------------------------------------- #
@@ -234,12 +240,14 @@ sanitize() {
 log() {
     local level=$1; shift
     local msg; msg=$(sanitize "$*")
+    (( DRY_RUN == 1 )) && msg="DRY-RUN $msg"
     local ts; ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
     local line="$ts [$level] $msg"
     if [[ -n ${LOG_FILE:-} ]]; then
         printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true
     fi
     if [[ $level == ERROR || $level == WARN ]]; then
+        [[ -n ${ERROR_LOG:-} ]] && printf '%s\n' "$line" >>"$ERROR_LOG" 2>/dev/null || true
         printf '%s\n' "$line" >&2
     fi
 }
@@ -250,7 +258,7 @@ log() {
 
 is_reserved_setting() {
     case $1 in
-        INCOMING_DIR|JSON_ARCHIVE_DIR|LOG_FILE|STABLE_SECONDS|REQUIRED) return 0 ;;
+        INCOMING_DIR|JSON_ARCHIVE_DIR|LOG_DIR|STABLE_SECONDS|REQUIRED) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -412,7 +420,7 @@ assign_setting() {
     case $name in
         INCOMING_DIR)     INCOMING_DIR=$uq ;;
         JSON_ARCHIVE_DIR) JSON_ARCHIVE_DIR=$uq ;;
-        LOG_FILE)         LOG_FILE=$uq ;;
+        LOG_DIR)          LOG_DIR=$uq ;;
         STABLE_SECONDS)   STABLE_SECONDS=$uq ;;
     esac
 }
@@ -449,8 +457,12 @@ parse_config() {
 validate_config_semantics() {
     [[ -n $INCOMING_DIR ]]     || CONFIG_ERRORS+=("missing required setting: INCOMING_DIR")
     [[ -n $JSON_ARCHIVE_DIR ]] || CONFIG_ERRORS+=("missing required setting: JSON_ARCHIVE_DIR")
-    [[ -n $LOG_FILE ]]         || CONFIG_ERRORS+=("missing required setting: LOG_FILE")
+    [[ -n $LOG_DIR ]]          || CONFIG_ERRORS+=("missing required setting: LOG_DIR")
     [[ $STABLE_SECONDS =~ ^[0-9]+$ ]] || CONFIG_ERRORS+=("STABLE_SECONDS must be a non-negative integer (got '$STABLE_SECONDS')")
+    if [[ -n $LOG_DIR ]]; then
+        LOG_FILE="$LOG_DIR/dispatch.log"
+        ERROR_LOG="$LOG_DIR/errors.log"
+    fi
 }
 
 report_config_diag() {
@@ -464,7 +476,8 @@ report_config_diag() {
     for e in "${CONFIG_ERRORS[@]}"; do
         local l="$ts [ERROR] config: $(sanitize "$e")"
         printf '%s\n' "$l" >&2
-        [[ -n ${LOG_FILE:-} ]] && printf '%s\n' "$l" >>"$LOG_FILE" 2>/dev/null || true
+        [[ -n ${LOG_FILE:-} ]]  && printf '%s\n' "$l" >>"$LOG_FILE"  2>/dev/null || true
+        [[ -n ${ERROR_LOG:-} ]] && printf '%s\n' "$l" >>"$ERROR_LOG" 2>/dev/null || true
     done
 }
 
@@ -617,6 +630,12 @@ process_pair() {
         ERRORS=$((ERRORS+1)); return
     fi
 
+    if (( DRY_RUN == 1 )); then
+        local wtarget; wtarget=$(collision_safe_path "$dest" "$dbase")
+        log INFO "would move '$dbase' -> '$wtarget' (rule #$ruleno: $ruletext); would archive '$jbase'"
+        PROCESSED=$((PROCESSED+1)); return
+    fi
+
     if ! mkdir -p -- "$dest" 2>/dev/null; then
         log ERROR "cannot create destination '$dest' for '$jbase' - left in place"
         ERRORS=$((ERRORS+1)); return
@@ -712,8 +731,9 @@ process_all() {
 usage() {
     printf '%s\n' \
         'Usage:' \
-        '  dispatch.sh [CONFIG]          process INCOMING_DIR once (intended to run from cron)' \
-        '  dispatch.sh --check [CONFIG]  validate the config file and exit (0 = OK)' \
+        '  dispatch.sh [CONFIG]           process INCOMING_DIR once (intended to run from cron)' \
+        '  dispatch.sh --dry-run [CONFIG] log what would happen, move nothing' \
+        '  dispatch.sh --check [CONFIG]   validate the config file and exit (0 = OK)' \
         '  dispatch.sh --help' \
         '' \
         'CONFIG defaults to "dispatch.conf" next to the script.'
@@ -723,6 +743,7 @@ main() {
     while (( $# )); do
         case $1 in
             --check) CHECK_ONLY=1 ;;
+            --dry-run|-n) DRY_RUN=1 ;;
             -h|--help) usage; exit 0 ;;
             --) shift; [[ $# -gt 0 ]] && CONFIG_PATH=$1; break ;;
             -*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -741,6 +762,7 @@ main() {
     parse_config "$CONFIG_PATH"
     validate_config_semantics
     if (( ${#CONFIG_ERRORS[@]} > 0 )); then
+        [[ -n $LOG_DIR ]] && mkdir -p -- "$LOG_DIR" 2>/dev/null || true
         report_config_diag
         exit 2
     fi
@@ -751,19 +773,22 @@ main() {
         exit 0
     fi
 
-    local logdir=${LOG_FILE%/*}
-    [[ $logdir == "$LOG_FILE" ]] && logdir="."
-    mkdir -p -- "$JSON_ARCHIVE_DIR" 2>/dev/null || true
-    mkdir -p -- "$logdir" 2>/dev/null || true
+    # The logs directory holds dispatch.log and errors.log; always created so we can log.
+    mkdir -p -- "$LOG_DIR" 2>/dev/null || true
 
-    # Prevent overlapping cron runs (lock kept in the admin-controlled log dir).
-    local lock="${LOG_FILE}.lock"
-    if ! exec 9>"$lock"; then
-        log ERROR "cannot open lock file '$lock'"; exit 1
-    fi
-    if ! flock -n 9; then
-        log INFO "another instance is already running - exiting"
-        exit 0
+    if (( DRY_RUN == 1 )); then
+        log INFO "mode: no files will be moved"
+    else
+        mkdir -p -- "$JSON_ARCHIVE_DIR" 2>/dev/null || true
+        # Prevent overlapping cron runs (lock kept in the admin-controlled logs dir).
+        local lock="$LOG_DIR/.dispatch.lock"
+        if ! exec 9>"$lock"; then
+            log ERROR "cannot open lock file '$lock'"; exit 1
+        fi
+        if ! flock -n 9; then
+            log INFO "another instance is already running - exiting"
+            exit 0
+        fi
     fi
 
     process_all

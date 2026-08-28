@@ -19,8 +19,10 @@ INCOMING_DIR     = "/data/incoming"
 # Single directory where every processed .json is archived (flat).
 JSON_ARCHIVE_DIR = "/data/archive/json"
 
-# Log file for all actions.
-LOG_FILE         = "/data/logs/dispatch.log"
+# Logs directory. Two files are written inside it:
+#   dispatch.log  - every action
+#   errors.log    - warnings and errors only
+LOG_DIR          = "/data/logs"
 
 # (optional) A file must stay unchanged for this many seconds (its I/O
 # must have settled) before it is processed. Guards against files that

@@ -18,7 +18,7 @@ declare -a FAILURES=()
 CURRENT=""
 
 # sandbox variables (reset by new_sandbox)
-SB="" IN="" ARCH="" OUT="" LOGDIR="" LOGF="" CONF="" RC=0
+SB="" IN="" ARCH="" OUT="" LOGDIR="" LOGF="" ERRF="" CONF="" RC=0
 STABLE=0
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
@@ -29,7 +29,7 @@ RED=$'\033[31m'; GREEN=$'\033[32m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
 new_sandbox() {
     SB=$(mktemp -d)
     IN="$SB/incoming"; ARCH="$SB/archive"; OUT="$SB/out"
-    LOGDIR="$SB/log"; LOGF="$LOGDIR/dispatch.log"; CONF="$SB/dispatch.conf"
+    LOGDIR="$SB/logs"; LOGF="$LOGDIR/dispatch.log"; ERRF="$LOGDIR/errors.log"; CONF="$SB/dispatch.conf"
     mkdir -p "$IN" "$OUT" "$LOGDIR"
 }
 
@@ -40,7 +40,7 @@ write_conf() {
     {
         printf 'INCOMING_DIR = "%s"\n' "$IN"
         printf 'JSON_ARCHIVE_DIR = "%s"\n' "$ARCH"
-        printf 'LOG_FILE = "%s"\n' "$LOGF"
+        printf 'LOG_DIR = "%s"\n' "$LOGDIR"
         printf 'STABLE_SECONDS = %s\n' "${STABLE:-0}"
         printf 'OUT = "%s"\n' "$OUT"
         printf '%s\n' "$1"
@@ -54,6 +54,7 @@ mkpair() {
 }
 
 run_dispatch() { "$DISPATCH" "$CONF" >/dev/null 2>"$SB/stderr"; RC=$?; }
+run_dispatch_dry() { "$DISPATCH" --dry-run "$CONF" >/dev/null 2>"$SB/stderr"; RC=$?; }
 
 # --------------------------------------------------------------------------- #
 # Assertions
@@ -398,7 +399,7 @@ t29() {
     {
         printf 'INCOMING_DIR = "%s"\n' "$IN"
         printf 'JSON_ARCHIVE_DIR = "%s"\n' "$ARCH"
-        printf 'LOG_FILE = "%s"\n' "$LOGF"
+        printf 'LOG_DIR = "%s"\n' "$LOGDIR"
         printf '$category = "report" =>\n'
         printf 'this is not a valid line\n'
     } > "$CONF"
@@ -422,6 +423,36 @@ t30() {
     printf 'this is broken\n' > "$SB/bad.conf"
     "$DISPATCH" --check "$SB/bad.conf" >/dev/null 2>&1; local rc_bad=$?
     a_true "[[ $rc_bad -ne 0 ]]" "invalid config: --check non-zero"
+    cleanup
+}
+
+t31() {
+    CURRENT="31 dry-run: logs actions, moves nothing"; new_sandbox
+    write_conf '$category = "report" => "$OUT/reports"'
+    mkpair a xml '{"category":"report"}'
+    run_dispatch_dry
+    a_rc 0
+    a_exists "$IN/a.xml"
+    a_exists "$IN/a.json"
+    a_true 'no_files_under "$OUT"' "nothing moved to destinations"
+    a_log "DRY-RUN mode: no files will be moved"
+    a_log "DRY-RUN would move 'a.xml' ->"
+    cleanup
+}
+
+t32() {
+    CURRENT="32 logs split: dispatch.log (all) vs errors.log (WARN/ERROR)"; new_sandbox
+    write_conf 'REQUIRED = $category
+$category = "report" => "$OUT/r"'
+    mkpair good xml '{"category":"report"}'
+    mkpair bad  xml '{"other":"x"}'
+    run_dispatch
+    a_exists "$LOGF"
+    a_exists "$ERRF"
+    a_true 'grep -qF "missing/empty required field" "$ERRF"' "errors.log has the error"
+    a_true '! grep -qF "moved" "$ERRF"'                       "errors.log excludes INFO moves"
+    a_true 'grep -qF "moved" "$LOGF"'                         "dispatch.log has the move"
+    a_true 'grep -qF "missing/empty required field" "$LOGF"'  "dispatch.log has the error too"
     cleanup
 }
 

@@ -45,11 +45,15 @@ $EDITOR dispatch.conf          # set your directories and rules
 ./dispatch.sh --check          # validate the config without processing anything
 ```
 
-Then run it once by hand to try it out:
+Then try it out without touching any file, then run it for real:
 
 ```sh
-./dispatch.sh
+./dispatch.sh --dry-run        # log what WOULD happen, move nothing
+./dispatch.sh                  # process for real
 ```
+
+In `--dry-run` mode nothing is moved or archived; every log line is prefixed with
+`DRY-RUN` so it is obvious it was a preview.
 
 ## Running from cron
 
@@ -65,7 +69,7 @@ started twice.
 Rotate the log with `logrotate` (`/etc/logrotate.d/file-dispatch`):
 
 ```
-/path/to/file-dispatch/logs/dispatch.log {
+/path/to/file-dispatch/logs/*.log {
     weekly
     rotate 8
     compress
@@ -83,11 +87,16 @@ One file, three parts: **Settings**, optional **Validation**, **Variables**, and
 ### Settings
 
 ```ini
-INCOMING_DIR     = "/data/incoming"          # directory to watch
-JSON_ARCHIVE_DIR = "/data/archive/json"      # where every processed .json goes
-LOG_FILE         = "/data/logs/dispatch.log" # action log
-STABLE_SECONDS   = 2                          # optional: I/O-settle delay (default 2)
+INCOMING_DIR     = "/data/incoming"      # directory to watch
+JSON_ARCHIVE_DIR = "/data/archive/json"  # where every processed .json goes
+LOG_DIR          = "/data/logs"          # logs folder (see below)
+STABLE_SECONDS   = 2                     # optional: I/O-settle delay (default 2)
 ```
+
+`LOG_DIR` is a **folder** that holds two files:
+
+- `dispatch.log` — every action (INFO, WARN, ERROR)
+- `errors.log` — the warnings and errors only, so problems are easy to spot
 
 ### One rule to remember: `$` means "the value of"
 
