@@ -73,6 +73,8 @@ TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
 #       $field = "value"                  equality (value may contain wildcards)
 #       $field IN ("a", "b", "c")         membership (any of the values)
 #   combine atoms with AND / OR           (AND is evaluated before OR)
+#   group with parentheses ( ... )        ( ) > AND > OR, e.g.
+#       ($a = "x" OR $a = "y") AND $b = "z" => ...
 #   wildcard "*" inside a value           matches any run of characters:
 #                                         "invoice*", "*credit", "*" (= any value)
 #   the destination may use values too:   $OUT, $GROUP, $category, ...
@@ -96,6 +98,9 @@ $type = "export" AND $status IN ("new", "retry")  => "$OUT/exports"
 
 # OR: either a high priority or an urgent flag.
 $priority = "high" OR $flag = "urgent"            => "$OUT/$GROUP/urgent"
+
+# Grouping: both "order" and "refund" must also be in the EU region.
+($category = "order" OR $category = "refund") AND $region = "EU" => "$OUT/eu"
 
 # Quotes for spaces/commas in both the value and the destination.
 $status IN ("in progress", "on hold")             => "$OUT/$GROUP/pending files"

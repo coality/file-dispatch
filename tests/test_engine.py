@@ -53,6 +53,21 @@ class TestHelpers(unittest.TestCase):
         self.assertIsNone(engine.parse_atom("$x"))      # no operator
         self.assertIsNone(engine.parse_atom("$x IN ()"))  # empty list
 
+    def test_parse_condition_ast(self):
+        ast = engine.parse_condition('$a = "x" AND $b = "y"')
+        self.assertEqual(ast[0], "AND")
+        ast2 = engine.parse_condition('($a = "x" OR $b = "y") AND $c = "z"')
+        self.assertEqual(ast2[0], "AND")        # top operator is AND
+        self.assertEqual(ast2[1][0], "OR")      # left operand is the grouped OR
+        # grouping parens are not confused with IN's value-list parens
+        ast3 = engine.parse_condition('$s IN ("a", "b") AND $t = "z"')
+        self.assertEqual(ast3[0], "AND")
+
+    def test_parse_condition_errors(self):
+        for bad in ('($a = "x" AND $b = "y"', '$a = "x")', '$a = "x" AND', '(', '$a = "x" OR OR $b = "y"'):
+            with self.assertRaises(engine.ConditionError):
+                engine.parse_condition(bad)
+
 
 class TestResolve(unittest.TestCase):
     def _config(self, text):
@@ -119,6 +134,27 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(r["status"], "NOMATCH")
         self.assertIn("category=other", r["summary"])
 
+    def test_grouping_parentheses(self):
+        cfg = self._config(self.BASE + '($cat = "order" OR $cat = "refund") AND $region = "EU" => "/o"\n')
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(self._resolve(cfg, {"cat": "order", "region": "EU"})["status"], "OK")
+        self.assertEqual(self._resolve(cfg, {"cat": "refund", "region": "EU"})["status"], "OK")
+        self.assertEqual(self._resolve(cfg, {"cat": "order", "region": "US"})["status"], "NOMATCH")
+
+    def test_parentheses_change_precedence(self):
+        # No parens: order OR (refund AND EU) -> "order" alone matches (AND binds first)
+        no_parens = self._config(self.BASE + '$cat = "order" OR $cat = "refund" AND $region = "EU" => "/o"\n')
+        self.assertEqual(self._resolve(no_parens, {"cat": "order", "region": "US"})["status"], "OK")
+        # With parens: (order OR refund) AND EU -> "order" alone does NOT match
+        parens = self._config(self.BASE + '($cat = "order" OR $cat = "refund") AND $region = "EU" => "/o"\n')
+        self.assertEqual(self._resolve(parens, {"cat": "order", "region": "US"})["status"], "NOMATCH")
+
+    def test_parentheses_with_in(self):
+        cfg = self._config(self.BASE + '($s IN ("a", "b") OR $t = "x") AND $u = "y" => "/o"\n')
+        self.assertEqual(self._resolve(cfg, {"s": "b", "u": "y"})["status"], "OK")
+        self.assertEqual(self._resolve(cfg, {"t": "x", "u": "y"})["status"], "OK")
+        self.assertEqual(self._resolve(cfg, {"s": "z", "u": "y"})["status"], "NOMATCH")
+
     def test_unsafe_destination(self):
         cfg = self._config(self.BASE + 'D = "$group"\n$category = "r" => "$OUT/$D/x"\n')
         self.assertEqual(self._resolve(cfg, {"category": "r", "group": "../../etc"})["status"], "UNSAFE")
@@ -157,6 +193,16 @@ class TestConfigErrors(unittest.TestCase):
     def test_error_has_line_number(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\nnot a valid line\n')
         self.assertTrue(any("line 4" in e for e in cfg.errors))
+
+    def test_unbalanced_parentheses(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          '($a = "x" AND $b = "y" => "/o"\n')
+        self.assertTrue(any("')'" in e for e in cfg.errors), cfg.errors)
+
+    def test_stray_close_parenthesis(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          '$a = "x") => "/o"\n')
+        self.assertTrue(any("condition" in e for e in cfg.errors), cfg.errors)
 
 
 if __name__ == "__main__":

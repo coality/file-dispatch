@@ -229,6 +229,120 @@ def to_str(v):
 
 
 # --------------------------------------------------------------------------- #
+# Condition grammar:  expr := or ;  or := and ("OR" and)* ;
+#                     and := factor ("AND" factor)* ;  factor := "(" expr ")" | atom
+# Grouping "(...)" is distinct from the "(...)" of an IN value list, which is
+# consumed as part of an atom by the tokenizer.
+# --------------------------------------------------------------------------- #
+class ConditionError(Exception):
+    pass
+
+
+def tokenize_condition(cond):
+    """Split a condition into tokens: ('LP',) ('RP',) ('AND',) ('OR',) ('ATOM', s)."""
+    toks = []
+    i, n = 0, len(cond)
+    while i < n:
+        while i < n and cond[i] in " \t":
+            i += 1
+        if i >= n:
+            break
+        c = cond[i]
+        if c == "(":
+            toks.append(("LP",)); i += 1; continue
+        if c == ")":
+            toks.append(("RP",)); i += 1; continue
+        if cond[i:i + 3] == "AND" and (i + 3 == n or cond[i + 3] in " \t()"):
+            toks.append(("AND",)); i += 3; continue
+        if cond[i:i + 2] == "OR" and (i + 2 == n or cond[i + 2] in " \t()"):
+            toks.append(("OR",)); i += 2; continue
+        # An atom: consume up to a top-level boundary (AND / OR / grouping ')').
+        start, depth, q = i, 0, None
+        while i < n:
+            ch = cond[i]
+            if q:
+                if ch == q:
+                    q = None
+                i += 1; continue
+            if ch in ('"', "'"):
+                q = ch; i += 1; continue
+            if ch == "(":
+                depth += 1; i += 1; continue
+            if ch == ")":
+                if depth == 0:
+                    break
+                depth -= 1; i += 1; continue
+            if depth == 0 and ch in " \t":
+                j = i
+                while j < n and cond[j] in " \t":
+                    j += 1
+                if cond[j:j + 3] == "AND" and (j + 3 == n or cond[j + 3] in " \t()"):
+                    break
+                if cond[j:j + 2] == "OR" and (j + 2 == n or cond[j + 2] in " \t()"):
+                    break
+            i += 1
+        toks.append(("ATOM", cond[start:i].strip()))
+    return toks
+
+
+def _tok_str(t):
+    return {"LP": "(", "RP": ")", "AND": "AND", "OR": "OR"}.get(t[0], t[1] if len(t) > 1 else t[0])
+
+
+def parse_condition(cond):
+    """Parse a condition into an AST, or raise ConditionError.
+
+    AST: ('AND', a, b) | ('OR', a, b) | ('ATOM', <parsed atom dict>).
+    """
+    if not quotes_balanced(cond):
+        raise ConditionError("unbalanced quotes in condition")
+    toks = tokenize_condition(cond)
+    if not toks:
+        raise ConditionError("empty condition")
+    pos = [0]
+    node = _parse_or(toks, pos)
+    if pos[0] != len(toks):
+        raise ConditionError("unexpected '%s' in condition" % _tok_str(toks[pos[0]]))
+    return node
+
+
+def _parse_or(toks, pos):
+    node = _parse_and(toks, pos)
+    while pos[0] < len(toks) and toks[pos[0]][0] == "OR":
+        pos[0] += 1
+        node = ("OR", node, _parse_and(toks, pos))
+    return node
+
+
+def _parse_and(toks, pos):
+    node = _parse_factor(toks, pos)
+    while pos[0] < len(toks) and toks[pos[0]][0] == "AND":
+        pos[0] += 1
+        node = ("AND", node, _parse_factor(toks, pos))
+    return node
+
+
+def _parse_factor(toks, pos):
+    if pos[0] >= len(toks):
+        raise ConditionError("condition ends unexpectedly (dangling AND/OR?)")
+    t = toks[pos[0]]
+    if t[0] == "LP":
+        pos[0] += 1
+        node = _parse_or(toks, pos)
+        if pos[0] >= len(toks) or toks[pos[0]][0] != "RP":
+            raise ConditionError("missing ')' in condition")
+        pos[0] += 1
+        return node
+    if t[0] == "ATOM":
+        at = parse_atom(t[1])
+        if at is None:
+            raise ConditionError("invalid condition '%s'" % t[1])
+        pos[0] += 1
+        return ("ATOM", at)
+    raise ConditionError("unexpected '%s' in condition" % _tok_str(t))
+
+
+# --------------------------------------------------------------------------- #
 # Config model
 # --------------------------------------------------------------------------- #
 class Config:
@@ -303,25 +417,13 @@ class Config:
             self.errors.append("line %d: rule has an empty destination" % lineno)
         if not quotes_balanced(dest):
             self.errors.append("line %d: unbalanced quotes in destination" % lineno)
+        ast = None
         if cond:
-            self._validate_cond(cond, lineno)
-        self.rules.append({"lineno": lineno, "text": body, "cond": cond, "dest": dest})
-
-    def _validate_cond(self, cond, lineno):
-        if not quotes_balanced(cond):
-            self.errors.append("line %d: unbalanced quotes in condition" % lineno)
-            return
-        if re.match(r"^(AND|OR)(\s|$)", cond) or re.search(r"(\s|^)(AND|OR)$", cond):
-            self.errors.append("line %d: dangling AND/OR in condition" % lineno)
-            return
-        for group in split_quote_aware(cond, " OR "):
-            for atom in split_quote_aware(group, " AND "):
-                atom = atom.strip()
-                if not atom:
-                    self.errors.append("line %d: empty condition (dangling AND/OR?)" % lineno)
-                    continue
-                if parse_atom(atom) is None:
-                    self.errors.append("line %d: invalid condition '%s'" % (lineno, atom))
+            try:
+                ast = parse_condition(cond)
+            except ConditionError as exc:
+                self.errors.append("line %d: %s" % (lineno, exc))
+        self.rules.append({"lineno": lineno, "text": body, "cond": cond, "dest": dest, "ast": ast})
 
     def validate(self):
         for req in ("INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR"):
@@ -364,7 +466,7 @@ class Config:
         for r in self.rules:
             if debug:
                 trace.append("  rule #%d: %s => %s" % (r["lineno"], r["cond"], r["dest"]))
-            if self._match_cond(r["cond"], ctx, debug, trace):
+            if r["ast"] is not None and self._eval(r["ast"], ctx, debug, trace):
                 dest = assemble_value(r["dest"], ctx)
                 if debug:
                     trace.append("  -> MATCH; destination resolves to '%s'" % dest)
@@ -377,21 +479,17 @@ class Config:
 
         return {"status": "NOMATCH", "summary": self._summary(ctx, keys), "debug": trace}
 
-    def _match_cond(self, cond, ctx, debug, trace):
-        for group in split_quote_aware(cond, " OR "):
-            ok = True
-            for atom in split_quote_aware(group, " AND "):
-                if not self._atom_true(atom, ctx, debug, trace):
-                    ok = False
-                    break
-            if ok:
-                return True
+    def _eval(self, node, ctx, debug, trace):
+        kind = node[0]
+        if kind == "ATOM":
+            return self._atom_true(node[1], ctx, debug, trace)
+        if kind == "AND":
+            return self._eval(node[1], ctx, debug, trace) and self._eval(node[2], ctx, debug, trace)
+        if kind == "OR":
+            return self._eval(node[1], ctx, debug, trace) or self._eval(node[2], ctx, debug, trace)
         return False
 
-    def _atom_true(self, atom, ctx, debug, trace):
-        at = parse_atom(atom)
-        if at is None:
-            return False
+    def _atom_true(self, at, ctx, debug, trace):
         lval = ctx.get(at["field"], "")
         if at["op"] == "EQ":
             pat = assemble_value(at["rhs"], ctx)

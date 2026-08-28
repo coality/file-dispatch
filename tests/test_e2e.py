@@ -681,6 +681,17 @@ class TestE2E(E2EBase):
         self.dispatch("--debug")
         self.in_log("processing pair: source=")
 
+    # 57: grouping parentheses in a rule condition
+    def test_57_grouping_parentheses(self):
+        self.write_conf('($category = "order" OR $category = "refund") AND $region = "EU" => "$OUT/eu"')
+        self.mkpair("a", "xml", '{"category":"order","region":"EU"}')
+        self.mkpair("b", "xml", '{"category":"refund","region":"EU"}')
+        self.mkpair("c", "xml", '{"category":"order","region":"US"}')   # grouped -> still needs EU
+        self.dispatch()
+        self.exists(self.op("eu", "a.xml"))
+        self.exists(self.op("eu", "b.xml"))
+        self.exists(self.inc("c.xml"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
