@@ -14,8 +14,13 @@
 #    ./dispatch.sh --check     validate this config, then exit (0 = OK)
 #    ./dispatch.sh --dry-run   log what WOULD happen but move NOTHING;
 #                              every log line is prefixed with "DRY-RUN".
-#                              Use it to preview a config before going live.
+#    ./dispatch.sh --debug     verbose trace: field values, variables, and the
+#                              rule resolution step by step.
 #    ./dispatch.sh             process for real (this is what cron runs)
+#
+#  Pointing at this file: any of the commands above accept
+#    --config-file /path/to/dispatch.conf     (or the $DISPATCH_CONFIG env var).
+#  With neither, the script uses "dispatch.conf" next to the script itself.
 # =====================================================================
 
 

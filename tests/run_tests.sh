@@ -83,7 +83,7 @@ t01() {
     a_exists "$ARCH/example.json"
     a_absent "$IN/example.xml"
     a_absent "$IN/example.json"
-    a_log "moved 'example.xml' ->"
+    a_log "SUCCESS source="
     a_log '(rule #6: $category = "report" => "$OUT/reports")'
     cleanup
 }
@@ -148,7 +148,7 @@ t07() {
     run_dispatch
     a_exists "$IN/a.xml"
     a_exists "$IN/a.json"
-    a_log "no rule matched for 'a.json'"
+    a_log "no rule matched source="
     cleanup
 }
 
@@ -161,7 +161,7 @@ t08() {
     run_dispatch
     a_exists "$IN/bad.xml"
     a_exists "$IN/bad.json"
-    a_log "invalid JSON: 'bad.json'"
+    a_log "reason='invalid JSON'"
     a_exists "$OUT/r/good.xml"
     cleanup
 }
@@ -172,7 +172,7 @@ t09() {
     printf '{"category":"report"}' > "$IN/lonely.json"
     run_dispatch
     a_exists "$IN/lonely.json"
-    a_log "waiting for data file of 'lonely.json'"
+    a_log "waiting for data file source="
     a_rc 0
     cleanup
 }
@@ -321,7 +321,7 @@ t22() {
     write_conf '$category = "nomatch" => "$OUT/r"'
     mkpair a xml '{"category":"evil\ninjected","group":"g"}'
     run_dispatch
-    a_log "no rule matched for 'a.json'"
+    a_log "no rule matched source="
     a_true '! grep -qE "^injected" "$LOGF"' "no forged log line"
     cleanup
 }
@@ -354,7 +354,7 @@ t25() {
     printf 'D' > "$IN/orphan.csv"
     run_dispatch
     a_exists "$IN/orphan.csv"
-    a_log "waiting for metadata (.json) of 'orphan.csv'"
+    a_log "waiting for metadata source="
     cleanup
 }
 
@@ -436,7 +436,7 @@ t31() {
     a_exists "$IN/a.json"
     a_true 'no_files_under "$OUT"' "nothing moved to destinations"
     a_log "DRY-RUN mode: no files will be moved"
-    a_log "DRY-RUN would move 'a.xml' ->"
+    a_log "DRY-RUN would move source="
     cleanup
 }
 
@@ -450,9 +450,150 @@ $category = "report" => "$OUT/r"'
     a_exists "$LOGF"
     a_exists "$ERRF"
     a_true 'grep -qF "missing/empty required field" "$ERRF"' "errors.log has the error"
-    a_true '! grep -qF "moved" "$ERRF"'                       "errors.log excludes INFO moves"
-    a_true 'grep -qF "moved" "$LOGF"'                         "dispatch.log has the move"
+    a_true '! grep -qF "SUCCESS" "$ERRF"'                     "errors.log excludes successes (INFO)"
+    a_true 'grep -qF "SUCCESS" "$LOGF"'                       "dispatch.log has the success"
     a_true 'grep -qF "missing/empty required field" "$LOGF"'  "dispatch.log has the error too"
+    cleanup
+}
+
+t33() {
+    CURRENT="33 --config-file flag (space and = forms)"; new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    mkpair a xml '{"category":"report"}'
+    "$DISPATCH" --config-file "$CONF" --check >/dev/null 2>&1; local r1=$?
+    a_true "[[ $r1 -eq 0 ]]" "--config-file FILE honored (--check)"
+    "$DISPATCH" "--config-file=$CONF" --check >/dev/null 2>&1; local r2=$?
+    a_true "[[ $r2 -eq 0 ]]" "--config-file=FILE honored (--check)"
+    "$DISPATCH" --config-file "$CONF" >/dev/null 2>"$SB/stderr"
+    a_exists "$OUT/r/a.xml"
+    cleanup
+}
+
+t34() {
+    CURRENT="34 DISPATCH_CONFIG env var + flag precedence"; new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    mkpair a xml '{"category":"report"}'
+    DISPATCH_CONFIG="$CONF" "$DISPATCH" >/dev/null 2>"$SB/stderr"
+    a_exists "$OUT/r/a.xml"
+    cleanup
+    # --config-file overrides $DISPATCH_CONFIG (env points at a broken file)
+    new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    mkpair b xml '{"category":"report"}'
+    printf 'this is broken\n' > "$SB/bad.conf"
+    DISPATCH_CONFIG="$SB/bad.conf" "$DISPATCH" --config-file "$CONF" >/dev/null 2>"$SB/stderr"; local rc=$?
+    a_true "[[ $rc -eq 0 ]]" "--config-file overrides \$DISPATCH_CONFIG"
+    a_exists "$OUT/r/b.xml"
+    cleanup
+}
+
+t35() {
+    CURRENT="35 flock: a second concurrent run exits without processing"; new_sandbox
+    write_conf '$category = "report" => "$OUT/r"'
+    mkpair a xml '{"category":"report"}'
+    local lock="$LOGDIR/.dispatch.lock"
+    : > "$lock"
+    exec 8>"$lock"; flock -n 8            # hold the lock like a running instance
+    "$DISPATCH" "$CONF" >/dev/null 2>"$SB/stderr"; local rc=$?
+    flock -u 8; exec 8>&-                 # release
+    a_true "[[ $rc -eq 0 ]]" "second run exits 0"
+    a_exists "$IN/a.xml"
+    a_log "another instance is already running"
+    cleanup
+}
+
+t36() {
+    CURRENT="36 preflight: non-numeric STABLE_SECONDS rejected"; new_sandbox
+    {
+        printf 'INCOMING_DIR = "%s"\n' "$IN"
+        printf 'JSON_ARCHIVE_DIR = "%s"\n' "$ARCH"
+        printf 'LOG_DIR = "%s"\n' "$LOGDIR"
+        printf 'STABLE_SECONDS = abc\n'
+        printf '$category = "report" => "%s/r"\n' "$OUT"
+    } > "$CONF"
+    mkpair a xml '{"category":"report"}'
+    run_dispatch
+    a_rc 2
+    a_exists "$IN/a.xml"
+    a_log "STABLE_SECONDS"
+    cleanup
+}
+
+t37() {
+    CURRENT="37 --help prints usage and exits 0"; new_sandbox
+    "$DISPATCH" --help > "$SB/help.txt" 2>&1; local rc=$?
+    a_true "[[ $rc -eq 0 ]]" "--help exit 0"
+    a_true 'grep -q -- "--config-file" "$SB/help.txt"' "help mentions --config-file"
+    a_true 'grep -q -- "DISPATCH_CONFIG" "$SB/help.txt"' "help mentions DISPATCH_CONFIG"
+    cleanup
+}
+
+t38() {
+    CURRENT="38 mega-complex condition: AND + OR + IN + wildcard + quoted"; new_sandbox
+    # (type~invoice* AND region in {EU,UK} AND status=new) OR (priority=high AND flag in {urgent,"on hold"})
+    write_conf '$type = "invoice*" AND $region IN ("EU", "UK") AND $status = "new" OR $priority = "high" AND $flag IN ("urgent", "on hold") => "$OUT/complex"'
+    mkpair a xml '{"type":"invoice_2026","region":"EU","status":"new"}'   # group 1 true
+    mkpair b xml '{"type":"invoice_x","region":"US","status":"new"}'      # region not in list
+    mkpair c xml '{"priority":"high","flag":"on hold"}'                   # group 2 true (quoted IN item)
+    mkpair d xml '{"priority":"high","flag":"low"}'                       # flag not in list
+    mkpair e xml '{"type":"creditnote","region":"EU","status":"new"}'    # type not invoice*
+    run_dispatch
+    a_exists "$OUT/complex/a.xml"
+    a_exists "$OUT/complex/c.xml"
+    a_exists "$IN/b.xml"
+    a_exists "$IN/d.xml"
+    a_exists "$IN/e.xml"
+    cleanup
+}
+
+t39() {
+    CURRENT="39 three OR-groups with mixed operators, correct group matches"; new_sandbox
+    write_conf '$a = "x" AND $b = "y" OR $c IN ("p", "q", "r") AND $d = "z*" OR $e = "solo" => "$OUT/multi"'
+    mkpair j xml '{"c":"q","d":"zebra"}'     # group 2 true
+    mkpair k xml '{"e":"solo"}'              # group 3 true
+    mkpair l xml '{"a":"x","b":"no"}'        # group 1 false, others absent
+    run_dispatch
+    a_exists "$OUT/multi/j.xml"
+    a_exists "$OUT/multi/k.xml"
+    a_exists "$IN/l.xml"
+    cleanup
+}
+
+t40() {
+    CURRENT="40 log line carries source, exact dest, and SUCCESS status"; new_sandbox
+    write_conf '$category = "report" => "$OUT/reports"'
+    mkpair a xml '{"category":"report"}'
+    run_dispatch
+    a_log "SUCCESS source="
+    a_log "source='$IN/a.xml'"
+    a_log "dest='$OUT/reports'"
+    a_log "target='$OUT/reports/a.xml'"
+    cleanup
+}
+
+t41() {
+    CURRENT="41 FAILURE status when destination cannot be created"; new_sandbox
+    write_conf '$category = "report" => "$OUT/blocked/sub"'
+    printf 'X' > "$OUT/blocked"       # a file where a directory is needed
+    mkpair a xml '{"category":"report"}'
+    run_dispatch
+    a_exists "$IN/a.xml"
+    a_log "FAILURE source="
+    a_log "cannot create destination"
+    cleanup
+}
+
+t42() {
+    CURRENT="42 --debug traces fields, variables, and rule resolution"; new_sandbox
+    write_conf 'GROUP = "$group"
+$category = "report" => "$OUT/$GROUP/reports"'
+    mkpair a xml '{"category":"report","group":"B"}'
+    "$DISPATCH" --debug "$CONF" >/dev/null 2>"$SB/dbg.txt"
+    a_log "[DEBUG]"
+    a_log "json field: \$category = 'report'"
+    a_log "variable: GROUP = 'B'"
+    a_log "MATCH; destination resolves to"
+    a_exists "$OUT/B/reports/a.xml"
     cleanup
 }
 

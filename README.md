@@ -49,18 +49,32 @@ Then try it out without touching any file, then run it for real:
 
 ```sh
 ./dispatch.sh --dry-run        # log what WOULD happen, move nothing
+./dispatch.sh --debug          # verbose trace (see "Debugging" below)
 ./dispatch.sh                  # process for real
 ```
 
 In `--dry-run` mode nothing is moved or archived; every log line is prefixed with
 `DRY-RUN` so it is obvious it was a preview.
 
+### Where the config file comes from
+
+The config path is resolved in this order (first match wins):
+
+1. `--config-file /path/to/dispatch.conf`
+2. the `DISPATCH_CONFIG` environment variable
+3. `dispatch.conf` next to the script (the default)
+
+```sh
+./dispatch.sh --config-file /etc/file-dispatch/prod.conf
+DISPATCH_CONFIG=/etc/file-dispatch/prod.conf ./dispatch.sh
+```
+
 ## Running from cron
 
 Process the incoming directory every 2 minutes:
 
 ```cron
-*/2 * * * * /path/to/file-dispatch/dispatch.sh /path/to/file-dispatch/dispatch.conf >> /path/to/file-dispatch/logs/cron.log 2>&1
+*/2 * * * * /path/to/file-dispatch/dispatch.sh --config-file /path/to/file-dispatch/dispatch.conf >> /path/to/file-dispatch/logs/cron.log 2>&1
 ```
 
 Overlapping runs are prevented automatically with a lock, so a slow run is never
@@ -183,12 +197,42 @@ No need to touch the script.
 3. Pair each `.json` with its data file; incomplete pairs wait for the next run.
 4. Skip any pair whose files are still changing (still being copied).
 5. For each complete, stable pair: validate JSON, check `REQUIRED`, evaluate the
-   rules, then move the data file and archive the JSON. Every move is logged with
-   the destination and the rule that matched:
+   rules, then move the data file and archive the JSON.
 
-   ```
-   2026-08-28T09:15:03+0000 [INFO] moved 'orders-42.csv' -> '/data/out/B/orders' (rule #12: $category = "order" => "$OUT/$GROUP/orders")
-   ```
+### Log format
+
+Every outcome is one line. A completed move carries a **`SUCCESS`** status, the
+**source** path, the **exact destination directory**, the final path, the rule
+that matched, and where the JSON was archived:
+
+```
+2026-08-28T09:15:03+0000 [INFO] SUCCESS source='/data/incoming/orders-42.csv' dest='/data/out/B/orders' target='/data/out/B/orders/orders-42.csv' (rule #12: $category = "order" => "$OUT/$GROUP/orders") archived='/data/archive/json/orders-42.json'
+```
+
+Anything that goes wrong carries a **`FAILURE`** status, the source, and the
+reason (and the file stays in place):
+
+```
+2026-08-28T09:15:04+0000 [ERROR] FAILURE source='/data/incoming/bad.xml' dest='/data/out/x' reason='move failed' - left in place
+```
+
+Both files live under `LOG_DIR`: `dispatch.log` (everything) and `errors.log`
+(the `WARN`/`FAILURE` lines only).
+
+### Debugging
+
+`--debug` (or `-d`) adds a verbose trace to `dispatch.log` (and stderr): the value
+of every JSON field, every variable as it is resolved, and the rule resolution
+step by step — each condition atom, which rule matched, and the resolved
+destination.
+
+```
+[DEBUG]   json field: $category = 'report'
+[DEBUG]   variable: GROUP = 'B'
+[DEBUG]   rule #8: $category = "report" => "$OUT/$GROUP/reports"
+[DEBUG]       atom $category = "report"  ('report')  -> true
+[DEBUG]   -> MATCH; destination resolves to '/data/out/B/reports'
+```
 
 ## Security notes
 

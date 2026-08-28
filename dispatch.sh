@@ -4,10 +4,13 @@
 # the metadata carried by their JSON sidecar, driven by a single config file.
 #
 # Usage:
-#   dispatch.sh [CONFIG]           process the incoming directory once (meant for cron)
-#   dispatch.sh --dry-run [CONFIG] log what would happen, but move nothing
-#   dispatch.sh --check [CONFIG]   validate the config and exit (0 = OK)
-#   dispatch.sh --help
+#   dispatch.sh [--config-file FILE] [--dry-run] [--debug] [--check]
+#     --config-file FILE  path to the config file
+#     --dry-run, -n       log what would happen, but move nothing
+#     --debug, -d         verbose trace: field values, variables, rule resolution
+#     --check             validate the config and exit (0 = OK)
+#     --help, -h          show help
+#   Config resolution: --config-file  >  $DISPATCH_CONFIG  >  dispatch.conf next to script
 #
 # Dependencies: bash >= 4, jq, flock (util-linux). All present on target.
 #
@@ -65,6 +68,7 @@ PROCESSED=0; UNMATCHED=0; INVALID=0; INCOMPLETE=0; UNSTABLE=0; ERRORS=0
 
 CHECK_ONLY=0
 DRY_RUN=0
+DEBUG=0
 CONFIG_PATH=""
 
 # --------------------------------------------------------------------------- #
@@ -249,8 +253,13 @@ log() {
     if [[ $level == ERROR || $level == WARN ]]; then
         [[ -n ${ERROR_LOG:-} ]] && printf '%s\n' "$line" >>"$ERROR_LOG" 2>/dev/null || true
         printf '%s\n' "$line" >&2
+    elif [[ $level == DEBUG ]]; then
+        printf '%s\n' "$line" >&2
     fi
 }
+
+# Debug trace (no-op unless --debug): goes to dispatch.log and stderr.
+dbg() { (( DEBUG == 1 )) && log DEBUG "$*"; }
 
 # --------------------------------------------------------------------------- #
 # Config parsing
@@ -490,14 +499,22 @@ atom_true() {
     local lval=${CTX[$ATOM_FIELD]-}
     if [[ $ATOM_OP == EQ ]]; then
         local pat; pat=$(assemble_value "$ATOM_RHS")
-        [[ $lval == $pat ]]
-        return
+        if [[ $lval == $pat ]]; then
+            (( DEBUG == 1 )) && dbg "      atom \$$ATOM_FIELD = \"$pat\"  ('$lval')  -> true"
+            return 0
+        fi
+        (( DEBUG == 1 )) && dbg "      atom \$$ATOM_FIELD = \"$pat\"  ('$lval')  -> false"
+        return 1
     fi
     local it pat
     for it in "${ATOM_ITEMS[@]}"; do
         pat=$(assemble_value "$it")
-        [[ $lval == $pat ]] && return 0
+        if [[ $lval == $pat ]]; then
+            (( DEBUG == 1 )) && dbg "      atom \$$ATOM_FIELD IN (...)  ('$lval' == \"$pat\")  -> true"
+            return 0
+        fi
     done
+    (( DEBUG == 1 )) && dbg "      atom \$$ATOM_FIELD IN (...)  ('$lval' in none)  -> false"
     return 1
 }
 
@@ -582,23 +599,29 @@ process_pair() {
     local dbase=${df##*/}
 
     if [[ -L $df ]]; then
-        log WARN "data file is a symlink, skipping: '$dbase'"; ERRORS=$((ERRORS+1)); return
+        log WARN "FAILURE source='$df' reason='data file is a symlink' - skipped"; ERRORS=$((ERRORS+1)); return
     fi
     if [[ ! -f $df ]]; then
-        log WARN "data file is not a regular file, skipping: '$dbase'"; ERRORS=$((ERRORS+1)); return
+        log WARN "FAILURE source='$df' reason='data file is not a regular file' - skipped"; ERRORS=$((ERRORS+1)); return
     fi
     if ! jq -e . "$jf" >/dev/null 2>&1; then
-        log ERROR "invalid JSON: '$jbase' - left in place"; INVALID=$((INVALID+1)); return
+        log ERROR "FAILURE source='$jf' reason='invalid JSON' - left in place"; INVALID=$((INVALID+1)); return
     fi
 
     load_ctx "$jf"
+
+    if (( DEBUG == 1 )); then
+        dbg "processing pair: source='$df' meta='$jf'"
+        local dk
+        for dk in "${JSON_KEYS[@]}"; do dbg "  json field: \$$dk = '${CTX[$dk]}'"; done
+    fi
 
     local missing=() f
     for f in "${REQUIRED_FIELDS[@]}"; do
         [[ -z ${CTX[$f]:-} ]] && missing+=("$f")
     done
     if (( ${#missing[@]} > 0 )); then
-        log ERROR "validation failed for '$jbase': missing/empty required field(s): ${missing[*]} - left in place"
+        log ERROR "FAILURE source='$jf' reason='missing/empty required field(s): ${missing[*]}' - left in place"
         ERRORS=$((ERRORS+1)); return
     fi
 
@@ -606,54 +629,58 @@ process_pair() {
     local i
     for i in "${!VAR_NAMES[@]}"; do
         CTX[${VAR_NAMES[$i]}]=$(assemble_value "${VAR_EXPRS[$i]}")
+        (( DEBUG == 1 )) && dbg "  variable: ${VAR_NAMES[$i]} = '${CTX[${VAR_NAMES[$i]}]}'"
     done
 
     # First matching rule wins
     local matched=0 dest="" ruletext="" ruleno=""
     for i in "${!RULE_COND[@]}"; do
+        (( DEBUG == 1 )) && dbg "  rule #${RULE_LINE[$i]}: ${RULE_COND[$i]} => ${RULE_DEST[$i]}"
         if rule_matches "${RULE_COND[$i]}"; then
             dest=$(assemble_value "${RULE_DEST[$i]}")
             ruletext=${RULE_TEXT[$i]}
             ruleno=${RULE_LINE[$i]}
             matched=1
+            (( DEBUG == 1 )) && dbg "  -> MATCH; destination resolves to '$dest'"
             break
         fi
+        (( DEBUG == 1 )) && dbg "  -> no match"
     done
 
     if (( matched == 0 )); then
-        log WARN "no rule matched for '$jbase' ($(ctx_summary)) - left in place"
+        log WARN "no rule matched source='$jf' ($(ctx_summary)) - left in place"
         UNMATCHED=$((UNMATCHED+1)); return
     fi
 
     if [[ -z $dest || $dest == *..* ]]; then
-        log ERROR "unsafe or empty destination '$dest' for '$jbase' - left in place"
+        log ERROR "FAILURE source='$df' dest='$dest' reason='unsafe or empty destination (contains ..)' - left in place"
         ERRORS=$((ERRORS+1)); return
     fi
 
     if (( DRY_RUN == 1 )); then
         local wtarget; wtarget=$(collision_safe_path "$dest" "$dbase")
-        log INFO "would move '$dbase' -> '$wtarget' (rule #$ruleno: $ruletext); would archive '$jbase'"
+        log INFO "would move source='$df' dest='$dest' target='$wtarget' (rule #$ruleno: $ruletext); would archive '$jbase'"
         PROCESSED=$((PROCESSED+1)); return
     fi
 
     if ! mkdir -p -- "$dest" 2>/dev/null; then
-        log ERROR "cannot create destination '$dest' for '$jbase' - left in place"
+        log ERROR "FAILURE source='$df' dest='$dest' reason='cannot create destination' - left in place"
         ERRORS=$((ERRORS+1)); return
     fi
 
     local target; target=$(collision_safe_path "$dest" "$dbase")
     if ! mv -- "$df" "$target" 2>/dev/null; then
-        log ERROR "move failed: '$dbase' -> '$dest' - left in place"
+        log ERROR "FAILURE source='$df' dest='$dest' reason='move failed' - left in place"
         ERRORS=$((ERRORS+1)); return
     fi
 
     local jtarget; jtarget=$(collision_safe_path "$JSON_ARCHIVE_DIR" "$jbase")
     if ! mv -- "$jf" "$jtarget" 2>/dev/null; then
-        log ERROR "data moved to '$target' but archiving JSON '$jbase' failed"
-        ERRORS=$((ERRORS+1))
+        log ERROR "FAILURE source='$df' target='$target' reason='data moved but JSON archiving failed'"
+        ERRORS=$((ERRORS+1)); return
     fi
 
-    log INFO "moved '$dbase' -> '$target' (rule #$ruleno: $ruletext)"
+    log INFO "SUCCESS source='$df' dest='$dest' target='$target' (rule #$ruleno: $ruletext) archived='$jtarget'"
     PROCESSED=$((PROCESSED+1))
 }
 
@@ -677,10 +704,10 @@ process_all() {
             data=$c; count=$((count+1))
         done
         if (( count == 0 )); then
-            log INFO "waiting for data file of '$base.json' (incomplete pair) - left in place"
+            log INFO "waiting for data file source='$jf' (incomplete pair) - left in place"
             INCOMPLETE=$((INCOMPLETE+1)); continue
         elif (( count > 1 )); then
-            log WARN "ambiguous: several data files match '$base.json' - left in place"
+            log WARN "ambiguous source='$jf' reason='several data files match same base name' - left in place"
             INCOMPLETE=$((INCOMPLETE+1)); continue
         fi
         pj+=("$jf"); pd+=("$data")
@@ -693,7 +720,7 @@ process_all() {
         [[ $f == *.json ]] && continue
         local b=${f##*/}
         [[ -e "$INCOMING_DIR/${b%.*}.json" ]] && continue
-        log INFO "waiting for metadata (.json) of '$b' - left in place"
+        log INFO "waiting for metadata source='$f' reason='no .json sidecar yet' - left in place"
         INCOMPLETE=$((INCOMPLETE+1))
     done
 
@@ -713,11 +740,11 @@ process_all() {
         local now
         now="$(stat -c '%s:%Y' -- "${pj[$idx]}" 2>/dev/null):$(stat -c '%s:%Y' -- "${pd[$idx]}" 2>/dev/null)"
         if [[ $now != "${sig_before[$idx]}" ]]; then
-            log INFO "files still changing for '${pj[$idx]##*/}' - will retry next run"
+            log INFO "still changing source='${pd[$idx]}' - will retry next run"
             UNSTABLE=$((UNSTABLE+1)); continue
         fi
         if is_open_for_write "${pj[$idx]}" || is_open_for_write "${pd[$idx]}"; then
-            log INFO "file open for writing for '${pj[$idx]##*/}' - will retry next run"
+            log INFO "still changing source='${pd[$idx]}' reason='open for writing' - will retry next run"
             UNSTABLE=$((UNSTABLE+1)); continue
         fi
         process_pair "${pj[$idx]}" "${pd[$idx]}"
@@ -730,13 +757,19 @@ process_all() {
 
 usage() {
     printf '%s\n' \
-        'Usage:' \
-        '  dispatch.sh [CONFIG]           process INCOMING_DIR once (intended to run from cron)' \
-        '  dispatch.sh --dry-run [CONFIG] log what would happen, move nothing' \
-        '  dispatch.sh --check [CONFIG]   validate the config file and exit (0 = OK)' \
-        '  dispatch.sh --help' \
+        'Usage: dispatch.sh [--config-file FILE] [--dry-run] [--debug] [--check]' \
         '' \
-        'CONFIG defaults to "dispatch.conf" next to the script.'
+        'Options:' \
+        '  --config-file FILE   path to the config file' \
+        '  --dry-run, -n        log what would happen, but move nothing' \
+        '  --debug, -d          verbose trace: field values, variables, rule resolution' \
+        '  --check              validate the config file and exit (0 = OK)' \
+        '  --help, -h           show this help' \
+        '' \
+        'Config file resolution (first match wins):' \
+        '  1. --config-file FILE' \
+        '  2. $DISPATCH_CONFIG environment variable' \
+        '  3. dispatch.conf next to the script'
 }
 
 main() {
@@ -744,6 +777,12 @@ main() {
         case $1 in
             --check) CHECK_ONLY=1 ;;
             --dry-run|-n) DRY_RUN=1 ;;
+            --debug|-d) DEBUG=1 ;;
+            --config-file)
+                shift
+                [[ $# -gt 0 ]] || { echo "--config-file requires a path" >&2; exit 2; }
+                CONFIG_PATH=$1 ;;
+            --config-file=*) CONFIG_PATH=${1#*=} ;;
             -h|--help) usage; exit 0 ;;
             --) shift; [[ $# -gt 0 ]] && CONFIG_PATH=$1; break ;;
             -*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -751,6 +790,8 @@ main() {
         esac
         shift
     done
+    # Config resolution: --config-file / positional  >  $DISPATCH_CONFIG  >  default
+    [[ -z $CONFIG_PATH ]] && CONFIG_PATH=${DISPATCH_CONFIG:-}
     [[ -z $CONFIG_PATH ]] && CONFIG_PATH="$SCRIPT_DIR/dispatch.conf"
 
     if ! command -v jq >/dev/null 2>&1; then
