@@ -76,7 +76,8 @@ TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 # A rule is:   <condition> => "<destination directory>"
 #
 #   condition atoms:
-#       $field = "value"                  equality (value may contain wildcards)
+#       $field = "value"                  equality (value may contain wildcards; == also works)
+#       $field != "value"                 not equal (or <>)
 #       $field IN ("a", "b", "c")         membership (any of the values)
 #   combine atoms with AND / OR           (AND is evaluated before OR)
 #   group with parentheses ( ... )        ( ) > AND > OR, e.g.

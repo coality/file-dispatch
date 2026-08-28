@@ -702,6 +702,15 @@ class TestE2E(E2EBase):
         self.exists(self.op("core", "a.xml"))
         self.exists(self.op("north", "b.xml"))
 
+    # 59: not-equal operator (!= / <>)
+    def test_59_not_equal_operator(self):
+        self.write_conf('$status != "done" AND $kind <> "draft" => "$OUT/active"')
+        self.mkpair("a", "xml", '{"status":"open","kind":"final"}')
+        self.mkpair("b", "xml", '{"status":"done","kind":"final"}')
+        self.dispatch()
+        self.exists(self.op("active", "a.xml"))
+        self.exists(self.inc("b.xml"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

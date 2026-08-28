@@ -82,6 +82,10 @@ class TestHelpers(unittest.TestCase):
     def test_atom_accepts_double_equals(self):
         self.assertEqual(engine.parse_atom('$x == "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
 
+    def test_atom_not_equal(self):
+        self.assertEqual(engine.parse_atom('$x != "y"'), {"op": "NE", "field": "x", "rhs": '"y"'})
+        self.assertEqual(engine.parse_atom('$x <> "y"'), {"op": "NE", "field": "x", "rhs": '"y"'})
+
 
 class TestResolve(unittest.TestCase):
     def _config(self, text):
@@ -194,6 +198,22 @@ class TestResolve(unittest.TestCase):
                                        '$category = "x" => "$OUT/$T"\n')
         self.assertEqual(self._resolve(cfg, {"category": "x", "amt": "high", "vip": "yes"})["dest"], "/out/gold")
         self.assertEqual(self._resolve(cfg, {"category": "x", "amt": "high", "vip": "no"})["dest"], "/out/std")
+
+    def test_not_equal_operator(self):
+        cfg = self._config(self.BASE + '$status != "done" => "$OUT/pending"\n')
+        self.assertEqual(self._resolve(cfg, {"status": "open"})["dest"], "/out/pending")
+        self.assertEqual(self._resolve(cfg, {"status": "done"})["status"], "NOMATCH")
+
+    def test_not_equal_wildcard(self):
+        cfg = self._config(self.BASE + '$name != "tmp*" => "$OUT/keep"\n')
+        self.assertEqual(self._resolve(cfg, {"name": "report"})["dest"], "/out/keep")
+        self.assertEqual(self._resolve(cfg, {"name": "tmp_1"})["status"], "NOMATCH")
+
+    def test_not_equal_in_ternary(self):
+        cfg = self._config(self.BASE + 'B = "x" if $a != "1" AND $b <> "2" else "y"\n'
+                                       '$c = "*" => "$OUT/$B"\n')
+        self.assertEqual(self._resolve(cfg, {"c": "z", "a": "9", "b": "9"})["dest"], "/out/x")
+        self.assertEqual(self._resolve(cfg, {"c": "z", "a": "1", "b": "9"})["dest"], "/out/y")
 
     def test_unsafe_destination(self):
         cfg = self._config(self.BASE + 'D = "$group"\n$category = "r" => "$OUT/$D/x"\n')

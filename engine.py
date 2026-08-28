@@ -205,6 +205,11 @@ def parse_atom(atom):
         if not items or any(it == "" for it in items):
             return None
         return {"op": "IN", "field": name, "items": items}
+    if rest.startswith("!=") or rest.startswith("<>"):       # not-equal
+        rhs = rest[2:].strip()
+        if rhs == "":
+            return None
+        return {"op": "NE", "field": name, "rhs": rhs}
     if rest.startswith("="):
         rest = rest[1:]
         if rest.startswith("="):        # accept Python-style '=='
@@ -350,6 +355,8 @@ def atom_matches(at, ctx):
     lval = ctx.get(at["field"], "")
     if at["op"] == "EQ":
         return fnmatch.fnmatchcase(lval, assemble_value(at["rhs"], ctx))
+    if at["op"] == "NE":
+        return not fnmatch.fnmatchcase(lval, assemble_value(at["rhs"], ctx))
     return any(fnmatch.fnmatchcase(lval, assemble_value(it, ctx)) for it in at["items"])
 
 
@@ -572,12 +579,14 @@ class Config:
 
     def _atom_true(self, at, ctx, debug, trace):
         lval = ctx.get(at["field"], "")
-        if at["op"] == "EQ":
+        if at["op"] in ("EQ", "NE"):
             pat = assemble_value(at["rhs"], ctx)
-            res = fnmatch.fnmatchcase(lval, pat)
+            m = fnmatch.fnmatchcase(lval, pat)
+            res = m if at["op"] == "EQ" else not m
             if debug:
-                trace.append("      atom $%s = \"%s\"  ('%s')  -> %s"
-                             % (at["field"], pat, lval, "true" if res else "false"))
+                sym = "=" if at["op"] == "EQ" else "!="
+                trace.append("      atom $%s %s \"%s\"  ('%s')  -> %s"
+                             % (at["field"], sym, pat, lval, "true" if res else "false"))
             return res
         for it in at["items"]:
             pat = assemble_value(it, ctx)

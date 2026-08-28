@@ -69,9 +69,9 @@ Rules — `condition => "destination directory"`, **first match wins**:
 | `$type = "export" AND $status IN ("new","retry") => "$OUT/exports"` | `{"type":"export","status":"new"}` | `/data/out/exports/` |
 | `$a = "x" OR $b = "y" => "$OUT/z"` | `{"b":"y"}` | `/data/out/z/` |
 
-- operators: `=`, `IN (...)`, `AND`, `OR`, and `( … )` to group (**`( )` > `AND` >
-  `OR`**); `*` is a wildcard. Example:
-  `($category = "order" OR $category = "refund") AND $region = "EU" => "$OUT/eu"`.
+- operators: `=` (or `==`), `!=` (or `<>`), `IN (...)`, `AND`, `OR`, and `( … )` to
+  group (**`( )` > `AND` > `OR`**); `*` is a wildcard. Example:
+  `($category = "order" OR $category = "refund") AND $region != "US" => "$OUT/eu"`.
 - To add routing for a new file type, add one rule line and re-run `--check`. No
   code changes.
 
