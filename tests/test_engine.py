@@ -86,6 +86,25 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(engine.parse_atom('$x != "y"'), {"op": "NE", "field": "x", "rhs": '"y"'})
         self.assertEqual(engine.parse_atom('$x <> "y"'), {"op": "NE", "field": "x", "rhs": '"y"'})
 
+    def test_atom_numeric_ops(self):
+        self.assertEqual(engine.parse_atom('$x < "10"')["op"], "LT")
+        self.assertEqual(engine.parse_atom('$x > "10"')["op"], "GT")
+        self.assertEqual(engine.parse_atom('$x <= "10"')["op"], "LE")
+        self.assertEqual(engine.parse_atom('$x >= "10"')["op"], "GE")
+
+    def test_atom_string_ops(self):
+        self.assertEqual(engine.parse_atom('$x STARTSWITH "a"')["op"], "STARTSWITH")
+        self.assertEqual(engine.parse_atom('$x ENDSWITH "z"')["op"], "ENDSWITH")
+        self.assertEqual(engine.parse_atom('$x CONTAINS "m"')["op"], "CONTAINS")
+
+    def test_value_functions(self):
+        self.assertEqual(engine.assemble_value("int($x)", {"x": "007"}), "7")
+        self.assertEqual(engine.assemble_value("int($x)", {"x": "3.9"}), "3")
+        self.assertEqual(engine.assemble_value("int($x)", {"x": "abc"}), "abc")   # unchanged
+        self.assertEqual(engine.assemble_value("upper($x)", {"x": "aB"}), "AB")
+        self.assertEqual(engine.assemble_value("lower($x)", {"x": "aB"}), "ab")
+        self.assertEqual(engine.assemble_value('"x-"int($n)"-y"', {"n": "05"}), "x-5-y")
+
 
 class TestResolve(unittest.TestCase):
     def _config(self, text):
@@ -214,6 +233,32 @@ class TestResolve(unittest.TestCase):
                                        '$c = "*" => "$OUT/$B"\n')
         self.assertEqual(self._resolve(cfg, {"c": "z", "a": "9", "b": "9"})["dest"], "/out/x")
         self.assertEqual(self._resolve(cfg, {"c": "z", "a": "1", "b": "9"})["dest"], "/out/y")
+
+    def test_numeric_operators(self):
+        cfg = self._config(self.BASE + '$amount >= "100" AND $amount < "1000" => "$OUT/mid"\n')
+        self.assertEqual(self._resolve(cfg, {"amount": "100"})["dest"], "/out/mid")
+        self.assertEqual(self._resolve(cfg, {"amount": "999"})["dest"], "/out/mid")
+        self.assertEqual(self._resolve(cfg, {"amount": "50"})["status"], "NOMATCH")
+        self.assertEqual(self._resolve(cfg, {"amount": "1000"})["status"], "NOMATCH")
+        self.assertEqual(self._resolve(cfg, {"amount": "abc"})["status"], "NOMATCH")   # non-numeric
+
+    def test_numeric_json_number(self):
+        cfg = self._config(self.BASE + '$n > "5" => "$OUT/big"\n')
+        self.assertEqual(self._resolve(cfg, {"n": 9})["dest"], "/out/big")
+        self.assertEqual(self._resolve(cfg, {"n": 2})["status"], "NOMATCH")
+
+    def test_string_operators(self):
+        cfg = self._config(self.BASE + '$name STARTSWITH "inv" => "$OUT/a"\n'
+                                       '$name ENDSWITH ".xml" => "$OUT/b"\n'
+                                       '$name CONTAINS "2026" => "$OUT/c"\n')
+        self.assertEqual(self._resolve(cfg, {"name": "invoice"})["dest"], "/out/a")
+        self.assertEqual(self._resolve(cfg, {"name": "data.xml"})["dest"], "/out/b")
+        self.assertEqual(self._resolve(cfg, {"name": "r2026"})["dest"], "/out/c")
+        self.assertEqual(self._resolve(cfg, {"name": "other"})["status"], "NOMATCH")
+
+    def test_int_cast_in_destination(self):
+        cfg = self._config(self.BASE + '$k = "*" => "$OUT/shard-"int($id)\n')
+        self.assertEqual(self._resolve(cfg, {"k": "z", "id": "007"})["dest"], "/out/shard-7")
 
     def test_unsafe_destination(self):
         cfg = self._config(self.BASE + 'D = "$group"\n$category = "r" => "$OUT/$D/x"\n')

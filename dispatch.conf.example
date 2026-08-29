@@ -66,10 +66,11 @@ REPORTS = "$OUT/Annual Reports"        # quotes -> spaces are fine; $ still expa
 TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
 #
 # A value can also be a Python-style ternary:  A if <condition> else B
-# The <condition> uses the same operators as rules (=, ==, IN, AND, OR, ( )).
-# Ternaries chain like if/elif/else.
+# The <condition> uses the same operators as rules. Ternaries chain like if/elif/else.
+# Functions available in a value: int(...), upper(...), lower(...).
 BU      = "core" if $category = "central" else $category
 TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
+SHARD   = int($id)                     # e.g. "007" -> "7"
 
 
 # --- 3) RULES --------------------------------------------------------
@@ -78,6 +79,8 @@ TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 #   condition atoms:
 #       $field = "value"                  equality (value may contain wildcards; == also works)
 #       $field != "value"                 not equal (or <>)
+#       $field < / > / <= / >= "10"       numeric comparison (non-numbers never match)
+#       $field STARTSWITH / ENDSWITH / CONTAINS "s"   substring tests
 #       $field IN ("a", "b", "c")         membership (any of the values)
 #   combine atoms with AND / OR           (AND is evaluated before OR)
 #   group with parentheses ( ... )        ( ) > AND > OR, e.g.

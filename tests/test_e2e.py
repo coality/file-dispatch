@@ -711,6 +711,24 @@ class TestE2E(E2EBase):
         self.exists(self.op("active", "a.xml"))
         self.exists(self.inc("b.xml"))
 
+    # 60: numeric + string operators combined
+    def test_60_numeric_and_string_operators(self):
+        self.write_conf('$amount >= "100" AND $name STARTSWITH "inv" => "$OUT/big-invoices"')
+        self.mkpair("a", "xml", '{"amount":"250","name":"invoice_1"}')
+        self.mkpair("b", "xml", '{"amount":"50","name":"invoice_2"}')    # amount too small
+        self.mkpair("c", "xml", '{"amount":"250","name":"other"}')       # wrong prefix
+        self.dispatch()
+        self.exists(self.op("big-invoices", "a.xml"))
+        self.exists(self.inc("b.xml"))
+        self.exists(self.inc("c.xml"))
+
+    # 61: int() cast in a variable used to build the destination
+    def test_61_int_cast_variable(self):
+        self.write_conf('SHARD = int($id)\n$type = "*" => "$OUT/$SHARD"')
+        self.mkpair("a", "xml", '{"id":"007","type":"t"}')
+        self.dispatch()
+        self.exists(self.op("7", "a.xml"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -150,29 +150,75 @@ def expand_refs(s, ctx):
     return "".join(out)
 
 
+def _cast_int(v):
+    """Cast a numeric string to its integer form; leave non-numbers unchanged."""
+    try:
+        return str(int(float(v)))
+    except (ValueError, TypeError):
+        return v
+
+
+# Value-expression functions: func(<value>). Quote text to use these names literally.
+FUNCS = {
+    "int": _cast_int,
+    "upper": lambda v: v.upper(),
+    "lower": lambda v: v.lower(),
+}
+_FUNC_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def _func_at(s, i):
+    """If a known FUNCS call starts at s[i], return (name, open_paren, close_paren)."""
+    m = _FUNC_RE.match(s, i)
+    if not m or m.group(1) not in FUNCS:
+        return None
+    open_idx = m.end() - 1
+    depth, q, j, n = 0, None, open_idx, len(s)
+    while j < n:
+        ch = s[j]
+        if q:
+            if ch == q:
+                q = None
+        elif ch in ('"', "'"):
+            q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return (m.group(1), open_idx, j)
+        j += 1
+    return None
+
+
 def assemble_value(s, ctx):
-    """Concatenate adjacent segments: bare / "..." expand $refs, '...' is literal."""
-    out, i, n = [], 0, len(s)
+    """Concatenate adjacent segments into a string:
+      "..."   -> $refs expanded         '...'   -> literal
+      func(…) -> function applied       bare    -> $refs expanded
+    """
+    out, i, n, bare = [], 0, len(s), 0
     while i < n:
         c = s[i]
-        if c == '"':
+        if c in ('"', "'"):
+            if i > bare:
+                out.append(expand_refs(s[bare:i], ctx))
             j = i + 1
-            while j < n and s[j] != '"':
+            while j < n and s[j] != c:
                 j += 1
-            out.append(expand_refs(s[i + 1:j], ctx))
-            i = j + 1
-        elif c == "'":
-            j = i + 1
-            while j < n and s[j] != "'":
-                j += 1
-            out.append(s[i + 1:j])
-            i = j + 1
-        else:
-            j = i
-            while j < n and s[j] not in ('"', "'"):
-                j += 1
-            out.append(expand_refs(s[i:j], ctx))
-            i = j
+            out.append(expand_refs(s[i + 1:j], ctx) if c == '"' else s[i + 1:j])
+            i = bare = j + 1
+            continue
+        fn = _func_at(s, i)
+        if fn:
+            name, open_idx, close_idx = fn
+            if i > bare:
+                out.append(expand_refs(s[bare:i], ctx))
+            out.append(FUNCS[name](assemble_value(s[open_idx + 1:close_idx], ctx)))
+            i = bare = close_idx + 1
+            continue
+        i += 1
+    if n > bare:
+        out.append(expand_refs(s[bare:n], ctx))
     return "".join(out)
 
 
@@ -205,11 +251,23 @@ def parse_atom(atom):
         if not items or any(it == "" for it in items):
             return None
         return {"op": "IN", "field": name, "items": items}
+    for kw in ("STARTSWITH", "ENDSWITH", "CONTAINS"):        # string predicates
+        if rest.startswith(kw + " ") or rest.startswith(kw + "\t"):
+            rhs = rest[len(kw):].strip()
+            if rhs == "":
+                return None
+            return {"op": kw, "field": name, "rhs": rhs}
     if rest.startswith("!=") or rest.startswith("<>"):       # not-equal
         rhs = rest[2:].strip()
         if rhs == "":
             return None
         return {"op": "NE", "field": name, "rhs": rhs}
+    for pfx, op in (("<=", "LE"), (">=", "GE"), ("<", "LT"), (">", "GT")):  # numeric
+        if rest.startswith(pfx):
+            rhs = rest[len(pfx):].strip()
+            if rhs == "":
+                return None
+            return {"op": op, "field": name, "rhs": rhs}
     if rest.startswith("="):
         rest = rest[1:]
         if rest.startswith("="):        # accept Python-style '=='
@@ -350,14 +408,53 @@ def _parse_factor(toks, pos):
     raise ConditionError("unexpected '%s' in condition" % _tok_str(t))
 
 
+OP_SYM = {"EQ": "=", "NE": "!=", "LT": "<", "GT": ">", "LE": "<=", "GE": ">=",
+          "STARTSWITH": "STARTSWITH", "ENDSWITH": "ENDSWITH", "CONTAINS": "CONTAINS"}
+
+
+def _to_num(s):
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def compare_atom(op, lval, pat):
+    """Compare a field value to a pattern for a single-value operator.
+
+    EQ/NE use glob matching; STARTSWITH/ENDSWITH/CONTAINS are plain substring
+    tests; </>/<=/>= are numeric (non-numeric operands -> False).
+    """
+    if op == "EQ":
+        return fnmatch.fnmatchcase(lval, pat)
+    if op == "NE":
+        return not fnmatch.fnmatchcase(lval, pat)
+    if op == "STARTSWITH":
+        return lval.startswith(pat)
+    if op == "ENDSWITH":
+        return lval.endswith(pat)
+    if op == "CONTAINS":
+        return pat in lval
+    a, b = _to_num(lval), _to_num(pat)
+    if a is None or b is None:
+        return False
+    if op == "LT":
+        return a < b
+    if op == "GT":
+        return a > b
+    if op == "LE":
+        return a <= b
+    if op == "GE":
+        return a >= b
+    return False
+
+
 def atom_matches(at, ctx):
     """Evaluate a parsed atom against ctx (used by rules and ternary conditions)."""
     lval = ctx.get(at["field"], "")
-    if at["op"] == "EQ":
-        return fnmatch.fnmatchcase(lval, assemble_value(at["rhs"], ctx))
-    if at["op"] == "NE":
-        return not fnmatch.fnmatchcase(lval, assemble_value(at["rhs"], ctx))
-    return any(fnmatch.fnmatchcase(lval, assemble_value(it, ctx)) for it in at["items"])
+    if at["op"] == "IN":
+        return any(fnmatch.fnmatchcase(lval, assemble_value(it, ctx)) for it in at["items"])
+    return compare_atom(at["op"], lval, assemble_value(at["rhs"], ctx))
 
 
 def eval_condition_ast(node, ctx):
@@ -579,14 +676,12 @@ class Config:
 
     def _atom_true(self, at, ctx, debug, trace):
         lval = ctx.get(at["field"], "")
-        if at["op"] in ("EQ", "NE"):
+        if at["op"] != "IN":
             pat = assemble_value(at["rhs"], ctx)
-            m = fnmatch.fnmatchcase(lval, pat)
-            res = m if at["op"] == "EQ" else not m
+            res = compare_atom(at["op"], lval, pat)
             if debug:
-                sym = "=" if at["op"] == "EQ" else "!="
                 trace.append("      atom $%s %s \"%s\"  ('%s')  -> %s"
-                             % (at["field"], sym, pat, lval, "true" if res else "false"))
+                             % (at["field"], OP_SYM[at["op"]], pat, lval, "true" if res else "false"))
             return res
         for it in at["items"]:
             pat = assemble_value(it, ctx)
