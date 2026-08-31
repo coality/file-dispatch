@@ -71,6 +71,23 @@ TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
 BU      = "core" if $category = "central" else $category
 TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 SHARD   = int($id)                     # e.g. "007" -> "7"
+#
+# More ternary patterns (the <condition> uses the SAME operators as rules):
+#   binary          A if <cond> else B
+#   chained (elif)  A if <c1> else B if <c2> else C
+#   the condition may use =, !=, <>, numeric < > <= >=, STARTSWITH/ENDSWITH/
+#   CONTAINS, IN (...), AND / OR, and ( ) grouping; branches may be literals,
+#   $fields, functions int()/upper()/lower(), or concatenations.
+ENVDIR  = "prod" if $env = "production" else "staging" if $env = "stage" else "dev"
+SIZEDIR = "xl" if $bytes >= "1000000" else "l" if $bytes >= "1000" else "s"   # numeric
+CHANNEL = "billing" if $type IN ("invoice", "credit", "debit") else "general" # IN
+INOUT   = "inbound" if $filename STARTSWITH "IN-" else "outbound"             # STARTSWITH
+ALERT   = "urgent" if $note CONTAINS "URGENT" else "normal"                   # CONTAINS
+ZONE    = "priority" if $vip = "yes" OR $tier = "gold" else "standard"        # OR
+SECURE  = "restricted" if ($region = "EU" AND $pii = "yes") else "open"       # AND + ( )
+ORG     = "core" if $bu = "central" else upper($bu)         # function in a branch
+OWNER   = $owner if $owner != "" else "unassigned"        # fill-in-a-default pattern
+BUCKET  = $group"/"$category if $group != "" else "misc"  # concatenation in a branch
 
 
 # --- 3) RULES --------------------------------------------------------
@@ -93,27 +110,80 @@ SHARD   = int($id)                     # e.g. "007" -> "7"
 # in place and a "no rule matched" line is logged.
 #
 # ---- Rule cookbook (edit / delete freely) ---------------------------
+# The examples below are grouped by feature. They are meant to be read,
+# copied, and adapted -- not all kept at once (remember: FIRST match wins,
+# so order matters and the catch-all at the very bottom would shadow any
+# rule placed after it). Every line is a valid, ready-to-run rule.
 
-# Equality: category "report" goes under its group's reports folder.
+# --- a) Equality ( = / == ) ------------------------------------------
+# category "report" goes under its group's reports folder.
 $category = "report"                              => "$OUT/$GROUP/reports"
+# == is an accepted spelling of =.
+$type == "invoice"                                => "$OUT/$GROUP/billing"
+# Compare a field to ANOTHER field (the right side may be a $reference).
+$owner = $group                                   => "$OUT/$GROUP/self-owned"
 
-# Membership: several categories share one destination.
+# --- b) Wildcards ( * matches any run of characters ) ----------------
+# starts with "arch" (archive, archived, archival, ...).
+$category = "arch*"                               => "$OUT/$GROUP/archive"
+# ends with "-eu".
+$region = "*-eu"                                  => "$OUT/eu"
+# has "temp" somewhere in the middle.
+$name = "*temp*"                                  => "$OUT/tmp"
+# "*" on its own matches ANY (non-empty) value -> a per-field bucket.
+$vendor = "*"                                     => "$OUT/vendors/$vendor"
+
+# --- c) Not equal ( != / <> ) ----------------------------------------
+# everything whose status is NOT "done".
+$status != "done"                                 => "$OUT/$GROUP/open"
+# <> is an accepted spelling of !=; wildcards work here too.
+$name <> "draft-*"                                => "$OUT/$GROUP/final"
+
+# --- d) Numeric comparison ( < > <= >= ) -----------------------------
+# both sides are read as numbers; a non-numeric value never matches.
+$amount >= "10000"                                => "$OUT/$GROUP/large"
+$amount < "100"                                   => "$OUT/$GROUP/small"
+$priority <= "3"                                  => "$OUT/$GROUP/high-priority"
+# a numeric window, using AND (see below).
+$score >= "50" AND $score < "80"                  => "$OUT/$GROUP/mid-band"
+
+# --- e) String predicates ( STARTSWITH / ENDSWITH / CONTAINS ) -------
+# plain substring tests (no wildcards, just literal text).
+$filename STARTSWITH "INV-"                       => "$OUT/$GROUP/invoices"
+$filename ENDSWITH ".pdf"                         => "$OUT/$GROUP/pdf"
+$note CONTAINS "URGENT"                           => "$OUT/$GROUP/urgent"
+
+# --- f) Membership ( IN (...) ) --------------------------------------
+# several values share one destination.
 $category IN ("invoice", "credit", "debit")       => "$OUT/$GROUP/billing"
-
-# Wildcard: any category that starts with "arch" (archive, archived, ...).
-$category = "arch*"                                => "$OUT/$GROUP/archive"
-
-# AND + IN: an export whose status is new or retry.
-$type = "export" AND $status IN ("new", "retry")  => "$OUT/exports"
-
-# OR: either a high priority or an urgent flag.
-$priority = "high" OR $flag = "urgent"            => "$OUT/$GROUP/urgent"
-
-# Grouping: both "order" and "refund" must also be in the EU region.
-($category = "order" OR $category = "refund") AND $region = "EU" => "$OUT/eu"
-
-# Quotes for spaces/commas in both the value and the destination.
+# items may be wildcards too.
+$ext IN ("*.csv", "*.tsv", "*.txt")               => "$OUT/$GROUP/text"
+# quotes let values contain spaces or commas.
 $status IN ("in progress", "on hold")             => "$OUT/$GROUP/pending files"
 
-# Composed destination built from JSON fields.
+# --- g) Boolean logic ( AND / OR ) -----------------------------------
+# AND: an export whose status is new or retry.
+$type = "export" AND $status IN ("new", "retry")  => "$OUT/exports"
+# OR: either a high priority or an urgent flag.
+$priority = "high" OR $flag = "urgent"            => "$OUT/$GROUP/urgent"
+# AND binds tighter than OR: reads as  A OR (B AND C).
+$vip = "yes" OR $tier = "gold" AND $region = "US" => "$OUT/$GROUP/premium"
+
+# --- h) Grouping ( ( ... ) overrides AND-before-OR ) -----------------
+# both "order" and "refund" must ALSO be in the EU region.
+($category = "order" OR $category = "refund") AND $region = "EU" => "$OUT/eu"
+# a nested example.
+($type = "export" OR $type = "sync") AND ($env = "prod" OR $env = "stage") => "$OUT/pipeline"
+
+# --- i) Destinations built from fields / variables -------------------
+# the right-hand side is a value expression: mix literals, $fields, $vars.
 $kind = "*"                                       => "$OUT/$GROUP/$kind"
+# use a variable defined above (TARGET = $group"/"$category).
+$category = "order"                               => "$OUT/$TARGET"
+# spaces and commas in the destination need quotes.
+$category = "annual"                              => "$REPORTS"
+
+# --- j) A catch-all fallback (KEEP THIS LAST) ------------------------
+# Nothing above matched? Send it to a review folder instead of leaving
+# it in place. Delete this line if you prefer "no match => left alone".
+$kind = "*"                                       => "$OUT/_unsorted"
