@@ -729,6 +729,21 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.exists(self.op("7", "a.xml"))
 
+    # 62: the interpreter version floor is enforced (clean error, nothing moved).
+    # MIN_PYTHON is monkeypatched high so the guard fires on any interpreter.
+    def test_62_min_python_guard(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        snippet = ("import dispatch, sys; dispatch.MIN_PYTHON = (99, 0); "
+                   "sys.exit(dispatch.main([%r]))" % self.conf)
+        e = dict(os.environ)
+        e["PYTHONPATH"] = ROOT + os.pathsep + e.get("PYTHONPATH", "")
+        r = subprocess.run([sys.executable, "-c", snippet],
+                           capture_output=True, text=True, env=e, cwd=ROOT)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("requires Python", r.stderr)
+        self.exists(self.inc("a.xml"))          # data file left in place
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
