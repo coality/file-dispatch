@@ -9,7 +9,7 @@ logging. The parsing / matching core lives in engine.py (imported below).
 
 Normally launched through dispatch.sh (a tiny shell launcher that just picks the
 Python interpreter), but it can also be run directly: `python3 dispatch.py ...`.
-Standard library only.
+Standard library only. Requires Python 3.9 or newer.
 """
 
 import argparse
@@ -22,6 +22,8 @@ import time
 from datetime import datetime
 
 import engine
+
+MIN_PYTHON = (3, 9)
 
 # Runtime state (filled from the config / CLI)
 INCOMING_DIR = ""
@@ -320,6 +322,16 @@ def main(argv):
     config_path = resolve_config_path(args)
 
     maybe_reexec(config_path)
+
+    # Enforce the minimum interpreter version (checked on the FINAL interpreter,
+    # i.e. after any PYTHON re-exec above).
+    if sys.version_info < MIN_PYTHON:
+        sys.stderr.write(
+            "%s [ERROR] file-dispatch requires Python %s or newer (running %s)\n"
+            % (datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
+               ".".join(map(str, MIN_PYTHON)),
+               ".".join(map(str, sys.version_info[:3]))))
+        return 3
 
     # Preflight: parse + validate the config.
     CFG = engine.Config()

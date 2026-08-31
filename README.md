@@ -11,8 +11,9 @@ ever deleted.
 
 ## Requirements
 
-`/bin/sh` and **python3** (standard library only — nothing to install).
-`lsof` is used if present, but is optional.
+`/bin/sh` and **Python 3.9 or newer** (standard library only — nothing to
+install). Tested on CPython 3.9 through 3.12. `lsof` is used if present, but is
+optional.
 
 ## Quick start
 
