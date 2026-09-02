@@ -36,6 +36,17 @@ INCOMING_DIR     = "/data/incoming"
 # Single directory where every processed .json is archived (flat).
 JSON_ARCHIVE_DIR = "/data/archive/json"
 
+# (optional) Where to write report.csv: ONE ROW PER FILE, updated across runs.
+# The logs say what happened during a run; this says where a given file stands.
+#   filename, first_seen, file_date, destination, moved_at, status, retries, reason
+#   status is success / failed / unmatched (no rule) / pending (waiting)
+# A failure is never repeated: the row is updated and retries grows, so one
+# stuck file stays one line. A row is keyed by filename AND first_seen, so a
+# name that comes back later opens a new row rather than reopening the old one.
+# Leave REPORT_DIR out for no report at all. --dry-run never writes it.
+# REPORT_DIR       = "/data/report"
+# REPORT_KEEP_DAYS = 90            # drop rows for files long gone; 0 keeps all
+
 # (optional) Log rotation, so a cron job cannot fill the disk.
 #   LOG_MAX_MB  roll a log over once the next line would take it past this
 #               size, in whole megabytes. 0 disables rotation entirely -- use

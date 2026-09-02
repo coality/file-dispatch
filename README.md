@@ -115,6 +115,8 @@ with a large cookbook of rule and variable examples.
 | `DEBUG` | | `no` | `yes` behaves like `--debug` |
 | `LOG_MAX_MB` | | `10` | roll a log over once it would exceed this size; `0` disables rotation |
 | `LOG_KEEP` | | `5` | how many rolled-over generations to keep (`0` truncates instead) |
+| `REPORT_DIR` | | — | write `report.csv` here: one row per file, updated across runs. Unset = no report |
+| `REPORT_KEEP_DAYS` | | `90` | drop rows for files no longer around after this many days (`0` keeps everything) |
 | `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -329,6 +331,44 @@ $kind = "*" => "$OUT/_unsorted"
 
 To add routing for a new file type, add one rule line and re-run `--check`. No
 code changes.
+
+## The report
+
+With `REPORT_DIR` set, each run writes `report.csv` there: **one row per file**,
+updated in place run after run. The logs say what happened during one run; this
+answers the question asked afterwards — *what became of `orders-42.csv`?*
+
+```csv
+filename,first_seen,file_date,destination,moved_at,status,retries,reason
+good.csv,2026-09-02T17:33:41.812,2026-09-02T17:33:41,/data/out/ok,2026-09-02T17:33:42,success,0,
+late.csv,2026-09-02T17:30:02.119,2026-09-02T17:30:01,/data/out/wait,2026-09-02T17:33:42,success,2,
+odd.csv,2026-09-02T17:30:02.140,2026-09-02T17:30:01,,,unmatched,3,no rule matched
+stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,check: [Errno 13] destination directory is not writable
+```
+
+| Column | Meaning |
+|--------|---------|
+| `filename` | base name as it arrived in `INCOMING_DIR` |
+| `first_seen` | when this run's dispatch first observed the file (milliseconds: it is half the row's identity) |
+| `file_date` | the file's own mtime — when the producer finished writing it |
+| `destination` | where it went, or where it *should* have gone: filled in even on a failure |
+| `moved_at` | when the move succeeded; empty while it has not |
+| `status` | `success`, `failed`, `unmatched` (no rule claimed it), `pending` (waiting for its sidecar, or still being written) |
+| `retries` | how many further runs have tried since the first attempt |
+| `reason` | why it is not `success` — the same wording as the log |
+
+**A failure is never repeated**: the row is updated and `retries` grows, so one
+stuck file is one line however long it stays stuck. When it finally goes
+through, that same row turns `success` and keeps its retry count as a record of
+how long it took.
+
+A row is identified by `filename` **and** `first_seen`, so a name that comes
+back later — periodic exports reuse names constantly — opens a new row instead
+of being added to the finished one. A success closes a row for good.
+
+`--dry-run` never writes the report. Rows for files that are no longer around
+are dropped after `REPORT_KEEP_DAYS`; the file is rewritten atomically each
+run, so a reader never sees it half-written.
 
 ## Logs
 

@@ -6,6 +6,7 @@ incoming directory, runs the real entry point (./dispatch.sh) as a subprocess,
 and asserts the final state: file locations, log contents, and exit code.
 """
 
+import csv
 import fcntl
 import json
 import os
@@ -1229,6 +1230,77 @@ class TestE2E(E2EBase):
         self.in_log("step='check'")
         self.in_log("destination directory is not writable")
         self.no_files_under(self.op("nope"))
+
+    # 97: one row per file, updated in place across runs, closed by a success.
+    def test_97_report_tracks_a_file_until_it_succeeds(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "ok" => "$OUT/ok"\n$category = "wait" => "$OUT/wait"',
+                        extra='REPORT_DIR = "%s"\nCREATE_DIRS = no' % rep)
+        os.makedirs(self.op("ok"))
+        self.mkpair("good", "csv", '{"category":"ok"}')
+        self.mkpair("late", "csv", '{"category":"wait"}')       # destination missing
+        self.mkpair("odd", "csv", '{"category":"other"}')       # no rule
+        self.dispatch()
+        self.dispatch()                                          # nothing changes
+        os.makedirs(self.op("wait"))                             # now it can go
+        self.dispatch()
+
+        rows = {r["filename"]: r for r in self.read_report(rep)}
+        self.assertEqual(sorted(rows), ["good.csv", "late.csv", "odd.csv"])
+        self.assertEqual(rows["good.csv"]["status"], "success")
+        self.assertEqual(rows["good.csv"]["retries"], "0")
+        self.assertTrue(rows["good.csv"]["moved_at"])
+        self.assertTrue(rows["good.csv"]["file_date"])           # read before the move
+        self.assertEqual(rows["good.csv"]["destination"], self.op("ok"))
+        # failed twice, then succeeded -- still ONE row
+        self.assertEqual(rows["late.csv"]["status"], "success")
+        self.assertEqual(rows["late.csv"]["retries"], "2")
+        self.assertEqual(rows["odd.csv"]["status"], "unmatched")
+        self.assertEqual(rows["odd.csv"]["reason"], "no rule matched")
+
+    # 98: a name that comes back after a success is a NEW file, not the old row.
+    def test_98_a_reused_name_opens_a_new_row(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("export", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.mkpair("export", "csv", '{"category":"x"}')          # same name, later
+        self.dispatch()
+        rows = [r for r in self.read_report(rep) if r["filename"] == "export.csv"]
+        self.assertEqual(len(rows), 2, rows)                      # two files, two rows
+        self.assertEqual([r["status"] for r in rows], ["success", "success"])
+        self.assertNotEqual(rows[0]["first_seen"], rows[1]["first_seen"])
+
+    # 99: a failure is not repeated -- one row, a growing retry count, a reason.
+    def test_99_failure_is_one_row_with_retries(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/missing"',
+                        extra='REPORT_DIR = "%s"\nCREATE_DIRS = no' % rep)
+        self.mkpair("a", "csv", '{"category":"x"}')
+        for _ in range(3):
+            self.dispatch()
+        rows = self.read_report(rep)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[0]["retries"], "2")                 # 1 attempt + 2 retries
+        self.assertIn("destination directory does not exist", rows[0]["reason"])
+        self.assertEqual(rows[0]["destination"], self.op("missing"))
+        self.assertEqual(rows[0]["moved_at"], "")
+
+    # 100: no REPORT_DIR, no report; and a dry run never writes one.
+    def test_100_report_is_opt_in_and_dry_run_writes_nothing(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.assertFalse(os.path.exists(rep))
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.dispatch("--dry-run")
+        self.assertFalse(os.path.exists(os.path.join(rep, "report.csv")))
+
+    def read_report(self, rep):
+        with open(os.path.join(rep, "report.csv"), newline="") as fh:
+            return list(csv.DictReader(fh))
 
 
 class TestLogRotation(unittest.TestCase):
