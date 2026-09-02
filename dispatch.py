@@ -130,16 +130,77 @@ def collision_safe(directory, name):
     return path
 
 
-def is_open_for_write(path):
+def paths_open_for_write(paths):
+    """Subset of 'paths' that some local process currently holds open for writing.
+
+    Catches the producer that is still copying a file in but happens to be idle
+    during the stability window, which the size/mtime comparison cannot see.
+    Answered for every path in one pass: on Linux by walking /proc (a few
+    milliseconds), elsewhere by a single lsof call. Best effort -- a writer
+    running as another user, or one on the far side of a network share, is
+    invisible either way, so this only ever adds safety.
+    """
+    if not paths:
+        return set()
+    if os.path.isdir("/proc/self/fd"):
+        return _writers_from_proc(paths)
+    return _writers_from_lsof(paths)
+
+
+def _writers_from_proc(paths):
+    want, busy = {}, set()
+    for p in paths:
+        want.setdefault(os.path.realpath(p), p)
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fddir = "/proc/%s/fd" % pid
+        try:
+            fds = os.listdir(fddir)
+        except OSError:
+            continue                    # process gone, or not ours to inspect
+        for fd in fds:
+            try:
+                target = os.readlink("%s/%s" % (fddir, fd))
+            except OSError:
+                continue
+            path = want.get(target)
+            if path is None or path in busy:
+                continue
+            try:
+                with open("/proc/%s/fdinfo/%s" % (pid, fd)) as fh:
+                    for line in fh:
+                        if line.startswith("flags:"):
+                            if int(line.split()[1], 8) & os.O_ACCMODE:
+                                busy.add(path)   # O_WRONLY or O_RDWR
+                            break
+            except (OSError, ValueError, IndexError):
+                continue
+    return busy
+
+
+def _writers_from_lsof(paths):
     lsof = shutil.which("lsof")
     if not lsof:
-        return False
+        return set()
+    want, busy, mode = {}, set(), ""
+    for p in paths:
+        want.setdefault(os.path.realpath(p), p)
     try:
-        out = subprocess.run([lsof, "-F", "a", "--", path],
+        out = subprocess.run([lsof, "-F", "an", "--", *paths],
                              capture_output=True, text=True).stdout
     except OSError:
-        return False
-    return any(line in ("au", "aw") for line in out.splitlines())
+        return set()
+    for line in out.splitlines():
+        if line.startswith("f"):
+            mode = ""
+        elif line.startswith("a"):
+            mode = line[1:]
+        elif line.startswith("n") and mode in ("u", "w"):
+            path = want.get(os.path.realpath(line[1:]))
+            if path is not None:
+                busy.add(path)
+    return busy
 
 
 def _sig(path):
@@ -291,12 +352,13 @@ def process_all():
     before = [(_sig(jf), _sig(df)) for (jf, df) in pairs]
     if STABLE_SECONDS > 0:
         time.sleep(STABLE_SECONDS)
+    busy = paths_open_for_write([p for pair in pairs for p in pair])
     for (jf, df), sig0 in zip(pairs, before):
         if (_sig(jf), _sig(df)) != sig0:
             log("INFO", "still changing source='%s' - will retry next run" % df)
             UNSTABLE += 1
             continue
-        if is_open_for_write(jf) or is_open_for_write(df):
+        if jf in busy or df in busy:
             log("INFO", "still changing source='%s' reason='open for writing' - will retry next run" % df)
             UNSTABLE += 1
             continue
