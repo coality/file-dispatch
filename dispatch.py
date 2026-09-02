@@ -252,6 +252,20 @@ def system_fields(path):
     return {"Filename": os.path.basename(path), "Filesize": size, "Filedatetime": stamp}
 
 
+def why(exc):
+    """A short, log-safe cause for an exception, for the cause='...' log field.
+
+    An OSError already carries the two things worth reporting -- the errno and
+    the system's own wording -- and the paths are named elsewhere in the line,
+    so they are dropped here. Quotes are stripped so cause='...' stays one
+    readable field.
+    """
+    errno_, strerror = getattr(exc, "errno", None), getattr(exc, "strerror", None)
+    if errno_ is not None and strerror:
+        return "[Errno %d] %s" % (errno_, strerror)
+    return sanitize(str(exc)).replace("'", "").strip() or exc.__class__.__name__
+
+
 def _sig(path):
     try:
         st = os.stat(path)
@@ -301,7 +315,8 @@ def process_pair(jf, df):
     src = jf or df
     status = result["status"]
     if status == "INVALID":
-        log("ERROR", "FAILURE move source='%s' reason='invalid JSON' - left in place" % jf)  # jf is set here
+        log("ERROR", "FAILURE move source='%s' reason='invalid JSON' cause='%s' - left in place"
+            % (jf, result.get("cause", "")))                     # jf is always set here
         INVALID += 1
         return
     if status == "REQUIRED_FAIL":
@@ -347,18 +362,19 @@ def process_pair(jf, df):
             return
         try:
             os.makedirs(dest, exist_ok=True)
-        except OSError:
+        except OSError as exc:
             log("ERROR", "FAILURE move source='%s' dest='%s' reason='cannot create destination' "
-                         "(rule #%s: %s) - left in place" % (df, dest, ruleno, ruletext))
+                         "cause='%s' (rule #%s: %s) - left in place"
+                % (df, dest, why(exc), ruleno, ruletext))
             ERRORS += 1
             return
 
     target = collision_safe(dest, dbase)
     try:
         shutil.move(df, target)
-    except (OSError, shutil.Error):
-        log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' (rule #%s: %s) - left in place"
-            % (df, dest, ruleno, ruletext))
+    except (OSError, shutil.Error) as exc:
+        log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' cause='%s' "
+                     "(rule #%s: %s) - left in place" % (df, dest, why(exc), ruleno, ruletext))
         ERRORS += 1
         return
 
@@ -367,9 +383,9 @@ def process_pair(jf, df):
         jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase)
         try:
             shutil.move(jf, jtarget)
-        except (OSError, shutil.Error):
+        except (OSError, shutil.Error) as exc:
             log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
-                         "failed'" % (df, target))
+                         "failed' cause='%s'" % (df, target, why(exc)))
             ERRORS += 1
             return
 
@@ -395,8 +411,8 @@ def process_all():
 
     try:
         entries = os.listdir(INCOMING_DIR)
-    except OSError:
-        log("ERROR", "cannot read incoming directory: '%s'" % INCOMING_DIR)
+    except OSError as exc:
+        log("ERROR", "cannot read incoming directory: '%s' cause='%s'" % (INCOMING_DIR, why(exc)))
         return 1
 
     pairs = []
@@ -629,8 +645,8 @@ def main(argv):
         lock_path = os.path.join(LOG_DIR, ".dispatch.lock")
         try:
             lock_fd = open(lock_path, "w")
-        except OSError:
-            log("ERROR", "cannot open lock file '%s'" % lock_path)
+        except OSError as exc:
+            log("ERROR", "cannot open lock file '%s' cause='%s'" % (lock_path, why(exc)))
             return 1
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

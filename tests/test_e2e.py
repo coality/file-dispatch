@@ -1105,6 +1105,41 @@ class TestE2E(E2EBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("DRY_RUN must be yes or no", r.stderr)
 
+    # 88: a failed move names the system's reason, not just "move failed".
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_88_move_failure_reports_the_cause(self):
+        dest = self.op("locked")
+        os.makedirs(dest)
+        os.chmod(dest, 0o555)
+        self.write_conf('$category = "*" => "$OUT/locked"')
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        self.in_log("reason='move failed'")
+        self.in_log("cause='[Errno 13] Permission denied'")
+        self.exists(self.inc("a.xml"))
+
+    # 89: a destination that cannot be created says why.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_89_create_failure_reports_the_cause(self):
+        ro = os.path.join(self.sb, "ro")
+        os.makedirs(ro)
+        os.chmod(ro, 0o555)
+        self.write_conf('$category = "*" => "%s/sub"' % ro)
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        self.in_log("reason='cannot create destination'")
+        self.in_log("cause='[Errno 13] Permission denied'")
+
+    # 90: invalid JSON says what is wrong with it, and where.
+    def test_90_invalid_json_reports_the_cause(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("broken", "xml", '{"category": "x",,}')
+        self.mkpair("array", "xml", "[1, 2, 3]")
+        self.dispatch()
+        err = self.errlog()
+        self.assertIn("cause='Expecting property name", err)
+        self.assertIn("cause='top level is list, expected an object'", err)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
