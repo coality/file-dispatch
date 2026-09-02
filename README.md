@@ -113,6 +113,8 @@ with a large cookbook of rule and variable examples.
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
 | `DRY_RUN` | | `no` | `yes` behaves like `--dry-run` |
 | `DEBUG` | | `no` | `yes` behaves like `--debug` |
+| `LOG_MAX_MB` | | `10` | roll a log over once it would exceed this size; `0` disables rotation |
+| `LOG_KEEP` | | `5` | how many rolled-over generations to keep (`0` truncates instead) |
 | `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -331,6 +333,26 @@ code changes.
 ## Logs
 
 `LOG_DIR` holds two files:
+
+Both are rotated by size, so a cron job cannot fill the disk:
+
+```
+dispatch.log      the current one, always
+dispatch.log.1    the previous generation
+...
+dispatch.log.5    the oldest kept; the next rotation drops it
+```
+
+A log is rolled over when the line about to be written would take it past
+`LOG_MAX_MB` (10 MB by default), keeping `LOG_KEEP` generations (5). Plain
+renames, no compression, so `grep` still works across the set and the newest
+lines are always in the unsuffixed file. Worst case on disk is
+`(LOG_KEEP + 1) x LOG_MAX_MB` per log, so 60 MB each, 120 MB in total by
+default. Failures are the bulky case — a `FAILURE` plus its `DIAG` line is
+~700 bytes — which is exactly when you do not want the disk filling up.
+
+Set `LOG_MAX_MB = 0` if `logrotate` already owns these files; running both
+would have them fighting over the same names.
 
 - **`dispatch.log`** — everything, at every level.
 - **`errors.log`** — real failures only, i.e. the `ERROR` lines: something did

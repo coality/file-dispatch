@@ -36,6 +36,18 @@ INCOMING_DIR     = "/data/incoming"
 # Single directory where every processed .json is archived (flat).
 JSON_ARCHIVE_DIR = "/data/archive/json"
 
+# (optional) Log rotation, so a cron job cannot fill the disk.
+#   LOG_MAX_MB  roll a log over once the next line would take it past this
+#               size, in whole megabytes. 0 disables rotation entirely -- use
+#               that if logrotate already owns these files, since running both
+#               would have them fighting over the same names.
+#   LOG_KEEP    how many generations to keep: dispatch.log.1 ... .<LOG_KEEP>,
+#               oldest dropped. 0 truncates instead of keeping any.
+# Plain renames, no compression, so grep still works across the whole set.
+# Worst case on disk: (LOG_KEEP + 1) x LOG_MAX_MB per log file.
+LOG_MAX_MB       = 10
+LOG_KEEP         = 5
+
 # Logs directory. Two files are written inside it:
 #   dispatch.log  - every action, at every level
 #   errors.log    - real failures only (the ERROR lines): something did not

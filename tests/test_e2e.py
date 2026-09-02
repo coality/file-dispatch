@@ -1231,5 +1231,56 @@ class TestE2E(E2EBase):
         self.no_files_under(self.op("nope"))
 
 
+class TestLogRotation(unittest.TestCase):
+    """The rotation itself, driven directly: the cap is in whole megabytes, so
+    exercising the shifting through a real run would mean writing tens of MB."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        import dispatch                                   # noqa: E402
+        self.d = dispatch
+        self.sb = tempfile.mkdtemp(prefix="fd-rot-")
+        self.log = os.path.join(self.sb, "dispatch.log")
+        self._saved = (dispatch.LOG_MAX_BYTES, dispatch.LOG_KEEP)
+
+    def tearDown(self):
+        self.d.LOG_MAX_BYTES, self.d.LOG_KEEP = self._saved
+        shutil.rmtree(self.sb, ignore_errors=True)
+
+    def write(self, text):
+        with open(self.log, "a") as f:
+            f.write(text + "\n")
+
+    def gen(self, i):
+        return os.path.join(self.sb, "dispatch.log.%d" % i)
+
+    def test_rotation_shifts_and_drops_the_oldest(self):
+        self.d.LOG_MAX_BYTES, self.d.LOG_KEEP = 100, 3
+        for i in range(1, 8):
+            self.d._append(self.log, "line %d %s" % (i, "x" * 90))
+        # dispatch.log plus exactly LOG_KEEP generations, nothing beyond
+        self.assertTrue(os.path.exists(self.log))
+        for i in (1, 2, 3):
+            self.assertTrue(os.path.exists(self.gen(i)), "missing .%d" % i)
+        self.assertFalse(os.path.exists(self.gen(4)))
+        # the newest content is in the unsuffixed file, the oldest survivor in .3
+        self.assertIn("line 7", open(self.log).read())
+        self.assertIn("line 4", open(self.gen(3)).read())
+
+    def test_zero_disables_rotation(self):
+        self.d.LOG_MAX_BYTES, self.d.LOG_KEEP = 0, 3
+        for i in range(20):
+            self.d._append(self.log, "x" * 200)
+        self.assertFalse(os.path.exists(self.gen(1)))
+        self.assertGreater(os.path.getsize(self.log), 200)
+
+    def test_keep_zero_truncates_instead_of_keeping_generations(self):
+        self.d.LOG_MAX_BYTES, self.d.LOG_KEEP = 100, 0
+        for i in range(10):
+            self.d._append(self.log, "line %d %s" % (i, "x" * 90))
+        self.assertFalse(os.path.exists(self.gen(1)))
+        self.assertLessEqual(os.path.getsize(self.log), 200)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
