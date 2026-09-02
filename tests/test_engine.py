@@ -115,6 +115,12 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(engine.parse_atom('$x <= "10"')["op"], "LE")
         self.assertEqual(engine.parse_atom('$x >= "10"')["op"], "GE")
 
+    def test_atom_isnull_parsing(self):
+        self.assertEqual(engine.parse_atom("$x ISNULL"), {"op": "ISNULL", "field": "x"})
+        self.assertEqual(engine.parse_atom("$x ISNOTNULL"), {"op": "ISNOTNULL", "field": "x"})
+        # It takes no right-hand side, so anything after it is not an atom.
+        self.assertIsNone(engine.parse_atom('$x ISNULL "y"'))
+
     def test_atom_string_ops(self):
         self.assertEqual(engine.parse_atom('$x STARTSWITH "a"')["op"], "STARTSWITH")
         self.assertEqual(engine.parse_atom('$x ENDSWITH "z"')["op"], "ENDSWITH")
@@ -165,6 +171,33 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(self._resolve(cfg, {"type": "invoice_9", "region": "UK"})["dest"], "/out/eu")
         self.assertEqual(self._resolve(cfg, {"category": "report"})["dest"], "/out/r")
         self.assertEqual(self._resolve(cfg, {"type": "invoice_9", "region": "US"})["status"], "NOMATCH")
+
+    def test_required_accepts_explicit_null(self):
+        cfg = self._config(self.BASE + "REQUIRED = $bu, $status\n$bu = \"*\" => \"/o\"\n")
+        # null is an answer: the producer said "no value here".
+        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "status": None})["status"], "OK")
+        # absent and "" are not.
+        self.assertEqual(self._resolve(cfg, {"bu": "alpha"})["status"], "REQUIRED_FAIL")
+        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "status": ""})["status"], "REQUIRED_FAIL")
+
+    def test_isnull_and_isnotnull(self):
+        cfg = self._config(self.BASE
+                           + '$status ISNULL    => "/none"\n'
+                           + '$status ISNOTNULL => "/some"\n')
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(self._resolve(cfg, {"status": None})["dest"], "/none")
+        self.assertEqual(self._resolve(cfg, {"status": "done"})["dest"], "/some")
+        # "" and an absent field are NOT null.
+        self.assertEqual(self._resolve(cfg, {"status": ""})["dest"], "/some")
+        self.assertEqual(self._resolve(cfg, {"other": "x"})["dest"], "/some")
+
+    def test_isnull_in_ternary_and_with_and(self):
+        cfg = self._config(self.BASE
+                           + 'K = "none" if $e ISNULL else lower($e)\n'
+                           + '$bu = "alpha" AND $e ISNULL => "/o/" + $K\n'
+                           + '$bu = "*" => "/o/" + $K\n')
+        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "e": None})["dest"], "/o/none")
+        self.assertEqual(self._resolve(cfg, {"bu": "FR1", "e": "DONE"})["dest"], "/o/done")
 
     def test_first_rule_wins(self):
         cfg = self._config(self.BASE + '$c = "x" => "/first"\n$c = "x" => "/second"\n')

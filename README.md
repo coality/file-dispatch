@@ -100,7 +100,7 @@ with a large cookbook of rule and variable examples.
 | `JSON_ARCHIVE_DIR` | ✅ | — | where each processed `.json` is archived (flat directory) |
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
-| `REQUIRED` | | — | comma-separated `$field`s that must be present **and** non-empty, else the file is left in place with an error |
+| `REQUIRED` | | — | comma-separated `$field`s that must be present **and** non-empty, else the file is left in place with an error; an explicit `null` counts as present |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
 ```ini
@@ -179,8 +179,29 @@ wins; if none match, the file is left in place (logged).
 | `<` `>` `<=` `>=` | numeric comparison — both sides parsed as numbers; a non-numeric value never matches |
 | `STARTSWITH` / `ENDSWITH` / `CONTAINS` | plain (literal) substring tests |
 | `IN ("a", "b", ...)` | membership; items may be wildcards |
+| `ISNULL` / `ISNOTNULL` | the field was present in the JSON as `null` (takes no right-hand side) |
 | `AND` / `OR` | combine conditions |
 | `( ... )` | grouping |
+
+### null fields
+
+JSON `null` has no string form, so as a *value* a null field reads as `""`, the
+same as an empty or absent one. Where it differs:
+
+- **`REQUIRED` accepts it.** `"status": null` is the producer answering "no
+  value here", which is an answer. A field that is absent, or set to `""`, still
+  fails.
+- **`ISNULL` / `ISNOTNULL` test it**, in rules and in ternary conditions alike.
+  Only a real JSON `null` is null: `""` and an absent field are not.
+
+```ini
+REQUIRED = $category, $status         # passes on "status": null
+
+KIND = "none" if $status ISNULL else lower($status)
+
+$status ISNULL    => $OUT + "/no_event"
+$status ISNOTNULL => $OUT + "/event/" + $KIND
+```
 
 Precedence is **`( )` > `AND` > `OR`**. The right-hand side of a comparison may
 itself be a `$field` or a function, e.g. `$owner = $group` or

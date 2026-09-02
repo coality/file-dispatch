@@ -55,6 +55,8 @@ STABLE_SECONDS   = 2
 # non-empty. If any is missing or empty, the file is left in place and
 # an ERROR is logged. Leave it out to disable validation.
 # (These are field references, so they stay bare.)
+# An explicit null ("status": null) counts as PRESENT and passes; a field
+# that is absent or set to "" does not. Use ISNULL to test for it.
 REQUIRED = $category, $group
 
 
@@ -165,6 +167,15 @@ $score >= "50" AND $score < "80"                  => "$OUT/$GROUP/mid-band"
 $filename STARTSWITH "INV-"                       => "$OUT/$GROUP/invoices"
 $filename ENDSWITH ".pdf"                         => "$OUT/$GROUP/pdf"
 $note CONTAINS "URGENT"                           => "$OUT/$GROUP/urgent"
+
+# --- e2) Null fields ( ISNULL / ISNOTNULL ) --------------------------
+# A JSON null reads as "" like an empty field, so these operators are the only
+# way to tell "the producer sent null" from "empty" or "absent". They take NO
+# right-hand side. REQUIRED accepts an explicit null too ("" and absent do not).
+$status ISNULL                                 => "$OUT/no_event"
+$status ISNOTNULL                              => "$OUT/event"
+# works in a ternary condition as well:
+# KIND = "none" if $status ISNULL else lower($status)
 
 # --- f) Membership ( IN (...) ) --------------------------------------
 # several values share one destination.
