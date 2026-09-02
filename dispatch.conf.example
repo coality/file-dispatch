@@ -57,6 +57,30 @@ STABLE_SECONDS   = 2
 # targets, and are created either way.
 CREATE_DIRS      = no
 
+# (optional) Also handle a data file that has NO <base>.json sidecar?
+#   no  (default) it is not ready yet -- the producer announces a file by
+#                 writing both halves -- so it waits for a later run.
+#   yes           it becomes a unit of work of its own, matched on the system
+#                 fields below alone (every other $field is empty), and moved
+#                 with nothing to archive (the log ends archived='-').
+# WARNING: if your producer writes the data file first and its .json a moment
+# later, "yes" can dispatch the data before the sidecar lands, orphaning it.
+# Turn it on only for files that genuinely arrive alone, or raise
+# STABLE_SECONDS past the gap between the two writes.
+DISPATCH_WITHOUT_JSON = no
+
+# --- SYSTEM FIELDS ---------------------------------------------------
+# Three fields come from the filesystem rather than the sidecar, and are
+# available to every rule and variable, sidecar or not:
+#   $Filename      base name with extension          "orders-42.csv"
+#   $Filesize      size in bytes, as digits          "10485760"   (< > <= >= work)
+#   $Filedatetime  mtime, local, YYYY-MM-DDTHH:MM:SS "2026-09-02T13:31:20"
+# A sidecar field of the same name WINS -- these only fill in what it does not
+# say. --debug labels each one "json field:" or "system field:".
+#     $Filename ENDSWITH ".csv"           => "$OUT/csv"
+#     $Filesize > "10000000"              => "$OUT/large"
+#     $Filedatetime STARTSWITH "2026-09"  => "$OUT/2026-09"
+
 # (optional) Path to the Python 3 interpreter used by the engine.
 # Leave it out to use "python3" from PATH (or the $DISPATCH_PYTHON env var).
 # PYTHON         = "/usr/bin/python3"

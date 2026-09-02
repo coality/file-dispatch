@@ -47,6 +47,7 @@ JSON_ARCHIVE_DIR = ""
 LOG_DIR = ""
 STABLE_SECONDS = 2
 CREATE_DIRS = False
+DISPATCH_WITHOUT_JSON = False
 LOG_FILE = ""
 ERROR_LOG = ""
 
@@ -228,6 +229,24 @@ def _writers_from_lsof(paths):
     return busy
 
 
+def system_fields(path):
+    """What the filesystem knows about a data file, as rule fields.
+
+    Always available, sidecar or not (engine.SYSTEM_FIELDS documents them).
+    Filesize is digits so the numeric operators work on it; Filedatetime is
+    "YYYY-MM-DDTHH:MM:SS" in local time, which STARTSWITH and wildcards can
+    slice by year, month or day. A file we cannot stat yields empty strings
+    rather than an error: no rule will match them, and the file stays put.
+    """
+    try:
+        st = os.stat(path)
+        size = str(st.st_size)
+        stamp = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        size, stamp = "", ""
+    return {"Filename": os.path.basename(path), "Filesize": size, "Filedatetime": stamp}
+
+
 def _sig(path):
     try:
         st = os.stat(path)
@@ -252,7 +271,7 @@ def process_pair(jf, df):
     losing track of a file that has already moved.
     """
     global PROCESSED, INVALID, ERRORS, UNMATCHED
-    jbase = os.path.basename(jf)
+    jbase = os.path.basename(jf) if jf else ""
     dbase = os.path.basename(df)
 
     if os.path.islink(df):
@@ -265,16 +284,16 @@ def process_pair(jf, df):
         return
 
     if DEBUG:
-        log("DEBUG", "processing pair: source='%s' meta='%s'" % (df, jf))
+        log("DEBUG", "processing pair: source='%s' meta='%s'" % (df, jf or "(none)"))
 
-    result = CFG.resolve(jf, DEBUG)
+    result = CFG.resolve(jf, DEBUG, system_fields(df))
     if DEBUG:
         for tline in result.get("debug", []):
             log("DEBUG", tline)
 
     status = result["status"]
     if status == "INVALID":
-        log("ERROR", "FAILURE move source='%s' reason='invalid JSON' - left in place" % jf)
+        log("ERROR", "FAILURE move source='%s' reason='invalid JSON' - left in place" % jf)  # jf is set here
         INVALID += 1
         return
     if status == "REQUIRED_FAIL":
@@ -307,7 +326,7 @@ def process_pair(jf, df):
             return
         log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
             % (df, dest, collision_safe(dest, dbase), ruleno, ruletext,
-               collision_safe(JSON_ARCHIVE_DIR, jbase)))
+               collision_safe(JSON_ARCHIVE_DIR, jbase) if jf else "-"))
         PROCESSED += 1
         return
 
@@ -335,13 +354,16 @@ def process_pair(jf, df):
         ERRORS += 1
         return
 
-    jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase)
-    try:
-        shutil.move(jf, jtarget)
-    except (OSError, shutil.Error):
-        log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving failed'" % (df, target))
-        ERRORS += 1
-        return
+    jtarget = "-"
+    if jf:
+        jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase)
+        try:
+            shutil.move(jf, jtarget)
+        except (OSError, shutil.Error):
+            log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
+                         "failed'" % (df, target))
+            ERRORS += 1
+            return
 
     log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
         % (df, dest, target, ruleno, ruletext, jtarget))
@@ -388,13 +410,20 @@ def process_all():
             continue
         pairs.append((jf, sibs[0]))
 
-    # Data files still waiting for their .json sidecar
+    # Data files with no .json sidecar. Normally they are simply not ready --
+    # the producer announces a file by writing both halves -- so they wait for
+    # a later run. With DISPATCH_WITHOUT_JSON they become units of work of
+    # their own instead, matched on their system metadata alone ($Filename,
+    # $Filesize, $Filedatetime) and moved with nothing to archive.
     for f in sorted(entries):
         p = os.path.join(INCOMING_DIR, f)
         if not os.path.isfile(p) or f.endswith(".json"):
             continue
         base_f = f.rsplit(".", 1)[0] if "." in f else f
         if os.path.exists(os.path.join(INCOMING_DIR, base_f + ".json")):
+            continue
+        if DISPATCH_WITHOUT_JSON:
+            pairs.append((None, p))
             continue
         log("INFO", "waiting for metadata source='%s' reason='no .json sidecar yet' - left in place" % p)
         INCOMPLETE += 1
@@ -410,12 +439,12 @@ def process_all():
     #   2. is anyone holding it open for writing -- catches exactly that case
     # One sleep for the whole batch, not one per file, and one open-files scan
     # for all paths at once; both are snapshots of the same instant.
-    before = [(_sig(jf), _sig(df)) for (jf, df) in pairs]
+    before = [(_sig(jf) if jf else None, _sig(df)) for (jf, df) in pairs]
     if STABLE_SECONDS > 0:
         time.sleep(STABLE_SECONDS)
-    busy = paths_open_for_write([p for pair in pairs for p in pair])
+    busy = paths_open_for_write([p for pair in pairs for p in pair if p])
     for (jf, df), sig0 in zip(pairs, before):
-        if (_sig(jf), _sig(df)) != sig0:
+        if (_sig(jf) if jf else None, _sig(df)) != sig0:
             log("INFO", "still changing source='%s' - will retry next run" % df)
             UNSTABLE += 1
             continue
@@ -491,7 +520,7 @@ def build_parser():
 
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
-    global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS
+    global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -527,6 +556,8 @@ def main(argv):
     except ValueError:
         STABLE_SECONDS = 2
     CREATE_DIRS = engine.BOOLS.get(CFG.settings.get("CREATE_DIRS", "no").strip().lower(), False)
+    DISPATCH_WITHOUT_JSON = engine.BOOLS.get(
+        CFG.settings.get("DISPATCH_WITHOUT_JSON", "no").strip().lower(), False)
 
     if CFG.errors:
         if LOG_DIR:

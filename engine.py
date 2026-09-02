@@ -45,7 +45,17 @@ import re
 RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
     "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
+    "DISPATCH_WITHOUT_JSON",
 }
+
+# Fields the filesystem itself provides, present for every file whether or not
+# it has a sidecar (dispatch.py fills them in; see system_fields there):
+#   $Filename      base name with extension, e.g. "orders-42.csv"
+#   $Filesize      size in bytes as digits, so < > <= >= work on it
+#   $Filedatetime  mtime as "YYYY-MM-DDTHH:MM:SS", local time
+# A sidecar field of the same name wins: the producer's metadata is the
+# authority, these only fill in what it does not say.
+SYSTEM_FIELDS = ("Filename", "Filesize", "Filedatetime")
 
 # Accepted spellings for the yes/no settings, and what they mean.
 BOOLS = {"yes": True, "no": False, "true": True, "false": False, "1": True, "0": False,
@@ -739,6 +749,9 @@ class Config:
         cd = self.settings.get("CREATE_DIRS", "no")
         if cd.strip().lower() not in BOOLS:
             self.errors.append("CREATE_DIRS must be yes or no (got '%s')" % cd)
+        nj = self.settings.get("DISPATCH_WITHOUT_JSON", "no")
+        if nj.strip().lower() not in BOOLS:
+            self.errors.append("DISPATCH_WITHOUT_JSON must be yes or no (got '%s')" % nj)
         if not self.rules:
             # Parses fine, dispatches nothing: every file would be logged as
             # "no rule matched" forever. Usually a rule swallowed by a quoting
@@ -749,7 +762,7 @@ class Config:
     # ----------------------------------------------------------------------- #
     # Per-file resolution
     # ----------------------------------------------------------------------- #
-    def resolve(self, jsonfile, debug):
+    def resolve(self, jsonfile, debug, sysmeta=None):
         """Decide where one file goes, from its JSON sidecar.
 
         Returns a dict whose "status" the caller switches on:
@@ -762,25 +775,37 @@ class Config:
         Three phases, in this order: read the fields, evaluate the variables on
         top of them, then try the rules. Nothing is cached between files -- each
         sidecar gets a fresh ctx, since every variable may depend on its fields.
+
+        'sysmeta' is the filesystem's own view of the data file ($Filename and
+        friends). It seeds ctx before the sidecar is read, so a sidecar field of
+        the same name overrides it. 'jsonfile' may be None, for a data file
+        dispatched on its system metadata alone.
         """
         trace = []
-        try:
-            with open(jsonfile, "r", encoding="utf-8") as jf:
-                data = json.load(jf)
-        except (OSError, ValueError):
-            return {"status": "INVALID", "debug": trace}
-        if not isinstance(data, dict):
-            return {"status": "INVALID", "debug": trace}
+        data = {}
+        if jsonfile is not None:
+            try:
+                with open(jsonfile, "r", encoding="utf-8") as jf:
+                    data = json.load(jf)
+            except (OSError, ValueError):
+                return {"status": "INVALID", "debug": trace}
+            if not isinstance(data, dict):
+                return {"status": "INVALID", "debug": trace}
 
         ctx = Fields()
-        keys = list(data.keys())
-        for k in keys:
+        for k, v in (sysmeta or {}).items():
+            ctx[k] = sanitize(to_str(v))
+        for k in data:                       # the sidecar has the last word
             ctx[k] = sanitize(to_str(data[k]))
-        ctx.nulls = frozenset(k for k in keys if data[k] is None)
+        ctx.nulls = frozenset(k for k in data if data[k] is None)
+        # The sidecar's own fields lead: they are what explains a non-match,
+        # while the system ones are there for every file anyway.
+        keys = list(data) + [k for k in (sysmeta or {}) if k not in data]
         if debug:
             for k in keys:
-                trace.append("  json field: $%s = %s"
-                             % (k, "null" if k in ctx.nulls else "'%s'" % ctx[k]))
+                trace.append("  %s field: $%s = %s"
+                             % ("json" if k in data else "system", k,
+                                "null" if k in ctx.nulls else "'%s'" % ctx[k]))
 
         # An explicit null counts as present: the producer said "no value here",
         # which is an answer. Absent and "" still fail.
