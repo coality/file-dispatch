@@ -1140,6 +1140,49 @@ class TestE2E(E2EBase):
         self.assertIn("cause='Expecting property name", err)
         self.assertIn("cause='top level is list, expected an object'", err)
 
+    # 91: a failed move is followed by everything needed to act on it.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_91_move_failure_emits_diagnostics(self):
+        dest = self.op("locked")
+        os.makedirs(dest)
+        os.chmod(dest, 0o555)
+        self.write_conf('$category = "*" => "$OUT/locked"')
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        diag = [l for l in self.errlog().splitlines() if "DIAG move" in l]
+        self.assertEqual(len(diag), 1, self.errlog())
+        line = diag[0]
+        self.assertIn("failed_on='%s" % dest, line)     # the path the kernel refused
+        self.assertIn("mode=0555", line)                # why it refused
+        self.assertIn("ours=rx", line)                  # what we can actually do
+        self.assertIn("same_filesystem=yes", line)
+        self.assertIn("process=", line)                 # who we are
+        self.assertIn("uid=%d" % os.getuid(), line)
+        self.assertIn("umask=", line)
+        self.assertIn("needs write+execute on it", line)
+
+    # 92: the diagnostic reports the closest existing ancestor when the
+    #     destination itself could not be created.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_92_create_failure_emits_diagnostics(self):
+        ro = os.path.join(self.sb, "ro")
+        os.makedirs(ro)
+        os.chmod(ro, 0o555)
+        self.write_conf('$category = "*" => "%s/a/b/c"' % ro)
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        diag = [l for l in self.errlog().splitlines() if "DIAG create" in l]
+        self.assertEqual(len(diag), 1, self.errlog())
+        self.assertIn("dest_dir='%s'" % ro, diag[0])    # the ancestor that decides
+        self.assertIn("mode=0555", diag[0])
+
+    # 93: a run with nothing wrong emits no diagnostics at all.
+    def test_93_no_diagnostics_on_a_clean_run(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        self.assertNotIn("DIAG", self.log())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

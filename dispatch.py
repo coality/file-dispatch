@@ -30,8 +30,11 @@ Standard library only. Requires Python 3.9 or newer.
 
 import argparse
 import fcntl
+import grp
 import os
+import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -266,6 +269,131 @@ def why(exc):
     return sanitize(str(exc)).replace("'", "").strip() or exc.__class__.__name__
 
 
+# Read once: os.umask has to set a value to read one, and doing that inside an
+# error path would briefly change the mask for anything running concurrently.
+try:
+    _UMASK = os.umask(0)
+    os.umask(_UMASK)
+except OSError:                                     # pragma: no cover
+    _UMASK = None
+
+
+def _owner(st):
+    """'user:group' for a stat result, falling back to numeric ids."""
+    try:
+        user = pwd.getpwuid(st.st_uid).pw_name
+    except (KeyError, OSError):
+        user = str(st.st_uid)
+    try:
+        group = grp.getgrgid(st.st_gid).gr_name
+    except (KeyError, OSError):
+        group = str(st.st_gid)
+    return "%s:%s" % (user, group)
+
+
+def _path_facts(label, path):
+    """What this process can see and do about one path."""
+    if not path:
+        return "%s='' (not set)" % label
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        return "%s='%s' (%s)" % (label, path, why(exc))
+    ours = "".join(c for c, ok in zip("rwx", (os.access(path, os.R_OK),
+                                              os.access(path, os.W_OK),
+                                              os.access(path, os.X_OK))) if ok) or "none"
+    out = "%s='%s' mode=%04o owner=%s ours=%s" % (
+        label, path, stat.S_IMODE(st.st_mode), _owner(st), ours)
+    if st.st_mode & stat.S_ISVTX:
+        # /tmp-style: you may only remove your own files, whatever the mode says
+        out += " sticky=yes"
+    return out
+
+
+def whoami():
+    """The identity the process is actually running under."""
+    try:
+        name = pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        name = "?"
+    try:
+        groups = ",".join(sorted(_group_name(g) for g in os.getgroups()))
+    except OSError:                                 # pragma: no cover
+        groups = "?"
+    out = "process=%s uid=%d euid=%d gid=%d groups=%s" % (
+        name, os.getuid(), os.geteuid(), os.getgid(), groups)
+    if _UMASK is not None:
+        out += " umask=%04o" % _UMASK
+    return out
+
+
+def _group_name(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except (KeyError, OSError):
+        return str(gid)
+
+
+def _same_filesystem(a, b):
+    """'yes'/'no'/'?' -- a cross-device move copies and deletes instead of
+    renaming, which needs different permissions and can fail differently."""
+    try:
+        return "yes" if os.stat(a).st_dev == os.stat(b).st_dev else "no"
+    except OSError:
+        return "?"
+
+
+def _nearest_existing(path):
+    """The closest existing ancestor of 'path' -- the directory whose
+    permissions actually decide whether the missing levels can be created."""
+    p = os.path.abspath(path or ".")
+    while not os.path.isdir(p):
+        up = os.path.dirname(p)
+        if up == p:
+            return p
+        p = up
+    return p
+
+
+def diagnose(src, dest_dir, exc=None):
+    """Everything that decides whether moving 'src' into 'dest_dir' can work.
+
+    A bare errno says almost nothing on its own -- "Operation not permitted"
+    is the same message whether the rename was refused, the source could not
+    be removed, or the share forbids it. These are the facts you would go and
+    collect by hand: who we are, what the three paths involved look like, and
+    whether the move is a rename or a copy-and-delete.
+    """
+    src_dir = os.path.dirname(os.path.abspath(src))
+    parts = []
+    # The kernel says which path it refused, which answers "permission on what?"
+    # before any of the rest has to be read.
+    for attr, label in (("filename", "failed_on"), ("filename2", "failed_on2")):
+        target = getattr(exc, attr, None)
+        if target:
+            parts.append("%s='%s'" % (label, target))
+    parts += [_path_facts("source", src),
+              _path_facts("source_dir", src_dir),
+              _path_facts("dest_dir", dest_dir),
+              "same_filesystem=%s" % _same_filesystem(src_dir, dest_dir),
+              whoami()]
+    notes = []
+    if _same_filesystem(src_dir, dest_dir) == "no":
+        notes.append("a cross-filesystem move copies the file then deletes the "
+                     "source, so it needs write on dest_dir AND write+execute on source_dir")
+    if not os.access(src_dir, os.W_OK | os.X_OK):
+        notes.append("removing the source needs write+execute on source_dir, which we lack")
+    if dest_dir and os.path.isdir(dest_dir) and not os.access(dest_dir, os.W_OK | os.X_OK):
+        notes.append("writing into dest_dir needs write+execute on it, which we lack")
+    if getattr(exc, "errno", None) == 1:            # EPERM
+        notes.append("EPERM rather than EACCES often means the filesystem itself refuses "
+                     "(network share mapping, read-only export, immutable attribute), "
+                     "not the mode bits")
+    if notes:
+        parts.append("notes='%s'" % "; ".join(notes))
+    return " ".join(parts)
+
+
 def _sig(path):
     try:
         st = os.stat(path)
@@ -366,6 +494,8 @@ def process_pair(jf, df):
             log("ERROR", "FAILURE move source='%s' dest='%s' reason='cannot create destination' "
                          "cause='%s' (rule #%s: %s) - left in place"
                 % (df, dest, why(exc), ruleno, ruletext))
+            log("ERROR", "DIAG create dest='%s' %s"
+                % (dest, diagnose(df, _nearest_existing(dest), exc)))
             ERRORS += 1
             return
 
@@ -375,6 +505,7 @@ def process_pair(jf, df):
     except (OSError, shutil.Error) as exc:
         log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' cause='%s' "
                      "(rule #%s: %s) - left in place" % (df, dest, why(exc), ruleno, ruletext))
+        log("ERROR", "DIAG move %s" % diagnose(df, dest, exc))
         ERRORS += 1
         return
 
@@ -386,6 +517,7 @@ def process_pair(jf, df):
         except (OSError, shutil.Error) as exc:
             log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
                          "failed' cause='%s'" % (df, target, why(exc)))
+            log("ERROR", "DIAG archive %s" % diagnose(jf, JSON_ARCHIVE_DIR, exc))
             ERRORS += 1
             return
 
