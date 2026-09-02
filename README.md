@@ -360,6 +360,32 @@ reason='invalid JSON'               cause='Expecting property name enclosed in d
 reason='invalid JSON'               cause='top level is list, expected an object'
 ```
 
+**A failed move, or a destination that could not be created, is followed by a
+`DIAG` line** carrying everything you would otherwise go and collect by hand —
+because an errno alone does not say *permission on what, to do what*:
+
+```
+[ERROR] FAILURE move source='…/a.xml' dest='/data/out/locked' reason='move failed' cause='[Errno 13] Permission denied' (rule #7: …) - left in place
+[ERROR] DIAG move failed_on='/data/out/locked/a.xml'
+        source='…/a.xml'     mode=0664 owner=svc:svc  ours=rw
+        source_dir='/data/incoming' mode=0775 owner=svc:svc  ours=rwx
+        dest_dir='/data/out/locked' mode=0555 owner=root:root ours=rx
+        same_filesystem=yes
+        process=svc uid=1001 euid=1001 gid=1001 groups=svc,users umask=0002
+        notes='writing into dest_dir needs write+execute on it, which we lack'
+```
+
+| Field | Answers |
+|-------|---------|
+| `failed_on` | the exact path the kernel refused (`filename2` too, for a rename) |
+| `mode` / `owner` / `ours` | the permissions of each path, and what *this* process can do with it (`rwx`, or `none`) |
+| `sticky=yes` | the directory only lets you remove your own files, whatever its mode says |
+| `same_filesystem` | `no` means the move is a copy **then a delete**, so it also needs write+execute on `source_dir` |
+| `process` | the account actually running: name, uid/euid, gid, groups, umask |
+| `notes` | the mismatch found, in words — including that `EPERM` usually means the filesystem itself refuses (share mapping, read-only export, immutable attribute) rather than the mode bits |
+
+Clean runs emit no `DIAG` lines.
+
 **A dry run writes the same lines**, with `DRY-RUN` inserted after the level —
 same status, same action, same fields. So a `--dry-run` log is a prediction of
 the real one, and the two can be diffed:
