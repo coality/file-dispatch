@@ -45,8 +45,12 @@ import re
 RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
     "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
-    "DISPATCH_WITHOUT_JSON",
+    "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
 }
+
+# The yes/no settings, all validated the same way and all overridable from the
+# command line for the two that have a flag (DRY_RUN, DEBUG).
+BOOL_SETTINGS = ("CREATE_DIRS", "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG")
 
 # Fields the filesystem itself provides, present for every file whether or not
 # it has a sidecar (dispatch.py fills them in; see system_fields there):
@@ -293,6 +297,12 @@ class Fields(dict):
     an untrusted JSON.
     """
     nulls = frozenset()
+
+
+def setting_bool(settings, name, default=False):
+    """Read a yes/no setting. Unset or unparseable falls back to 'default';
+    validate() is what reports an unparseable one, so this never raises."""
+    return BOOLS.get(str(settings.get(name, "")).strip().lower(), default)
 
 
 def parse_atom(atom):
@@ -746,12 +756,10 @@ class Config:
         st = self.settings.get("STABLE_SECONDS", "2")
         if not re.fullmatch(r"[0-9]+", st):
             self.errors.append("STABLE_SECONDS must be a non-negative integer (got '%s')" % st)
-        cd = self.settings.get("CREATE_DIRS", "no")
-        if cd.strip().lower() not in BOOLS:
-            self.errors.append("CREATE_DIRS must be yes or no (got '%s')" % cd)
-        nj = self.settings.get("DISPATCH_WITHOUT_JSON", "no")
-        if nj.strip().lower() not in BOOLS:
-            self.errors.append("DISPATCH_WITHOUT_JSON must be yes or no (got '%s')" % nj)
+        for name in BOOL_SETTINGS:
+            val = self.settings.get(name, "no")
+            if val.strip().lower() not in BOOLS:
+                self.errors.append("%s must be yes or no (got '%s')" % (name, val))
         if not self.rules:
             # Parses fine, dispatches nothing: every file would be logged as
             # "no rule matched" forever. Usually a rule swallowed by a quoting

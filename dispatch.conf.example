@@ -86,6 +86,14 @@ DISPATCH_WITHOUT_JSON = no
 #     $Filesize > "10000000"              => "$OUT/large"
 #     $Filedatetime STARTSWITH "2026-09"  => "$OUT/2026-09"
 
+# (optional) The two run-mode flags, so they can live in the config instead of
+# being typed on every invocation. The COMMAND LINE WINS: --dry-run / --debug
+# turn them on, --no-dry-run / --no-debug turn them off, and the settings below
+# are consulted only when neither flag is given -- so a config left on
+# DRY_RUN = yes can never silently swallow a real run.
+DRY_RUN          = no
+DEBUG            = no
+
 # (optional) Path to the Python 3 interpreter used by the engine.
 # Leave it out to use "python3" from PATH (or the $DISPATCH_PYTHON env var).
 # PYTHON         = "/usr/bin/python3"

@@ -1071,6 +1071,40 @@ class TestE2E(E2EBase):
         self.assertIn("data file is a symlink", self.errlog())
         self.in_log("errors=1")
 
+    # 85: DRY_RUN and DEBUG can be set in the config ...
+    def test_85_dry_run_and_debug_from_the_config(self):
+        self.write_conf('$category = "r" => "$OUT/r"', extra="DRY_RUN = yes\nDEBUG = yes")
+        self.mkpair("a", "xml", '{"category":"r"}')
+        self.dispatch()
+        self.exists(self.inc("a.xml"))              # DRY_RUN = yes: nothing moved
+        self.no_files_under(self.out)
+        self.in_log("DRY-RUN SUCCESS move")
+        self.in_log("[DEBUG]")                      # DEBUG = yes: trace present
+
+    # 86: ... and the command line overrides them, in both directions.
+    def test_86_command_line_beats_the_config(self):
+        self.write_conf('$category = "r" => "$OUT/r"', extra="DRY_RUN = yes\nDEBUG = yes")
+        self.mkpair("a", "xml", '{"category":"r"}')
+        self.dispatch("--no-dry-run", "--no-debug")
+        self.exists(self.op("r", "a.xml"))          # moved despite DRY_RUN = yes
+        self.assertNotIn("[DEBUG]", self.log())
+        self.assertNotIn("DRY-RUN", self.log())
+
+    def test_86b_flags_win_over_a_config_that_says_no(self):
+        self.write_conf('$category = "r" => "$OUT/r"', extra="DRY_RUN = no\nDEBUG = no")
+        self.mkpair("a", "xml", '{"category":"r"}')
+        self.dispatch("--dry-run", "--debug")
+        self.exists(self.inc("a.xml"))
+        self.in_log("DRY-RUN")
+        self.in_log("[DEBUG]")
+
+    # 87: an unusable value is refused by --check, like the other yes/no settings.
+    def test_87_bad_dry_run_value_is_refused(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="DRY_RUN = perhaps")
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DRY_RUN must be yes or no", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
