@@ -320,8 +320,16 @@ code changes.
 
 ## Logs
 
-`LOG_DIR` holds `dispatch.log` (everything) and `errors.log` (warnings/errors
-only). Each outcome is one structured line, `<STATUS> <action>` followed by
+`LOG_DIR` holds two files:
+
+- **`dispatch.log`** — everything, at every level.
+- **`errors.log`** — real failures only, i.e. the `ERROR` lines: something did
+  not happen and needs a look. Watch this one. Warnings stay out of it: a file
+  no rule claimed (`no rule matched`), a base name matching several data files,
+  a setting written twice — observations about a run that otherwise went fine.
+  Both levels still print to stderr, so nothing is hidden when running by hand.
+
+Each outcome is one structured line, `<STATUS> <action>` followed by
 `key='value'` fields:
 
 ```

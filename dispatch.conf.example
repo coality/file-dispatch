@@ -37,8 +37,11 @@ INCOMING_DIR     = "/data/incoming"
 JSON_ARCHIVE_DIR = "/data/archive/json"
 
 # Logs directory. Two files are written inside it:
-#   dispatch.log  - every action
-#   errors.log    - warnings and errors only
+#   dispatch.log  - every action, at every level
+#   errors.log    - real failures only (the ERROR lines): something did not
+#                   happen and needs a look. This is the one to watch.
+#                   Warnings -- a file no rule claimed, a duplicate setting --
+#                   stay in dispatch.log. Both still print to stderr.
 LOG_DIR          = "/data/logs"
 
 # (optional) A file must stay unchanged for this many seconds (its I/O

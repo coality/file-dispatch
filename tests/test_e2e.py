@@ -1043,6 +1043,34 @@ class TestE2E(E2EBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("DISPATCH_WITHOUT_JSON must be yes or no", r.stderr)
 
+    # 83: errors.log holds real failures only -- no WARN, and nothing routine.
+    def test_83_errors_log_holds_only_errors(self):
+        self.write_conf('$category = "r" => "$OUT/r"', extra="STABLE_SECONDS = 0")
+        self.mkpair("ok", "xml", '{"category":"r"}')            # success
+        self.mkpair("none", "xml", '{"category":"other"}')      # no rule matched: WARN
+        self.mkpair("bad", "xml", "not json at all")            # invalid: ERROR
+        self.dispatch()
+        err = self.errlog()
+        self.assertIn("invalid JSON", err)                      # the real failure
+        self.assertNotIn("[WARN]", err)
+        self.assertNotIn("no rule matched", err)                # routine, not an error
+        self.assertNotIn("SUCCESS", err)
+        # dispatch.log still has all of it.
+        self.in_log("no rule matched")
+        self.in_log("invalid JSON")
+        self.in_log("SUCCESS move")
+
+    # 84: a skipped symlink is a failure, so it reaches errors.log too --
+    #     it was already counted in errors= while being logged as a warning.
+    def test_84_symlink_is_logged_as_an_error(self):
+        self.write_conf('$category = "r" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"r"}')
+        os.remove(self.inc("a.xml"))
+        os.symlink("/etc/hostname", self.inc("a.xml"))
+        self.dispatch()
+        self.assertIn("data file is a symlink", self.errlog())
+        self.in_log("errors=1")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
