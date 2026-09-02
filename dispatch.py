@@ -291,6 +291,9 @@ def process_pair(jf, df):
         for tline in result.get("debug", []):
             log("DEBUG", tline)
 
+    # With no sidecar there is no jf to name in a log line; the data file is
+    # the subject of the message either way.
+    src = jf or df
     status = result["status"]
     if status == "INVALID":
         log("ERROR", "FAILURE move source='%s' reason='invalid JSON' - left in place" % jf)  # jf is set here
@@ -298,11 +301,11 @@ def process_pair(jf, df):
         return
     if status == "REQUIRED_FAIL":
         log("ERROR", "FAILURE move source='%s' reason='missing/empty required field(s): %s' - left in place"
-            % (jf, ", ".join(result["missing"])))
+            % (src, ", ".join(result["missing"])))
         ERRORS += 1
         return
     if status == "NOMATCH":
-        log("WARN", "no rule matched source='%s' (%s) - left in place" % (jf, result["summary"]))
+        log("WARN", "no rule matched source='%s' (%s) - left in place" % (src, result["summary"]))
         UNMATCHED += 1
         return
     if status == "UNSAFE":
@@ -311,7 +314,7 @@ def process_pair(jf, df):
         ERRORS += 1
         return
     if status != "OK":
-        log("ERROR", "FAILURE move source='%s' reason='resolver error' - left in place" % jf)
+        log("ERROR", "FAILURE move source='%s' reason='resolver error' - left in place" % src)
         ERRORS += 1
         return
 

@@ -1001,6 +1001,17 @@ class TestE2E(E2EBase):
         self.in_log("archived='-'")                 # no sidecar to archive
         self.no_files_under(self.archive)
 
+    # 80b: a sidecar-less file that matches nothing names ITSELF in the log,
+    #      not the sidecar it does not have.
+    def test_80b_orphan_nomatch_names_the_data_file(self):
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/csv"',
+                        extra="DISPATCH_WITHOUT_JSON = yes")
+        self.write_raw(self.inc("lonely.dat"), "DATA")
+        self.dispatch()
+        self.in_log("no rule matched source='%s'" % self.inc("lonely.dat"))
+        self.assertNotIn("source='None'", self.log())
+        self.exists(self.inc("lonely.dat"))
+
     # 81: a paired file is still paired when the setting is on -- the sidecar
     #     is read and archived exactly as before.
     def test_81_pairs_unaffected_by_the_setting(self):
