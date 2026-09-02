@@ -103,7 +103,7 @@ with a large cookbook of rule and variable examples.
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
-| `REQUIRED` | | — | comma-separated `$field`s that must be present **and** non-empty, else the file is left in place with an error; an explicit `null` counts as present |
+| `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
 ```ini
@@ -145,6 +145,10 @@ announces a file by writing both halves — so it waits for a later run and is
 counted in `incomplete=`. With `DISPATCH_WITHOUT_JSON = yes` it becomes a unit
 of work of its own: rules see only the three system fields (every other
 `$field` is empty), and since there is no sidecar, the log ends `archived='-'`.
+
+`REQUIRED` is not held against such a file: it states what a sidecar must
+provide, and there is no sidecar to hold to it. Files that do have one are
+still checked as before, so the two settings can be used together.
 
 ```ini
 DISPATCH_WITHOUT_JSON = yes
