@@ -29,6 +29,7 @@ Standard library only. Requires Python 3.9 or newer.
 """
 
 import argparse
+import csv
 import fcntl
 import grp
 import os
@@ -55,6 +56,8 @@ LOG_FILE = ""
 ERROR_LOG = ""
 LOG_MAX_BYTES = 10 * 1024 * 1024        # 0 disables rotation
 LOG_KEEP = 5
+REPORT_DIR = ""                         # "" disables the report entirely
+REPORT_KEEP_DAYS = 90
 
 DRY_RUN = False
 DEBUG = False
@@ -551,6 +554,138 @@ def _sig(path):
 
 
 # --------------------------------------------------------------------------- #
+# The CSV report
+#
+# One row per FILE -- not per name and not per run. The logs say what happened
+# during one run; this says where a given file stands, which is the question
+# asked after the fact ("what became of orders-42.csv?").
+#
+# A row is identified by (filename, first_seen), so a name that comes back
+# later is a new file with its own history rather than an addition to the old
+# one -- periodic exports reuse names constantly. A row that reaches success is
+# closed: a later file of the same name opens a fresh row.
+#
+# While a file keeps failing, its row is updated in place and 'retries' counts
+# the runs that tried again, so one stuck file is one line, not one per run.
+# --------------------------------------------------------------------------- #
+REPORT_COLUMNS = ("filename", "first_seen", "file_date", "destination",
+                  "moved_at", "status", "retries", "reason")
+
+_report = None          # {(filename, first_seen): row}; None until loaded
+_report_seen = set()    # keys touched this run, so retention can spare them
+
+
+def _now(precise=False):
+    """A timestamp for the report. 'precise' adds milliseconds, which only
+    first_seen needs: it is half of a row's identity, and two files of the same
+    name can turn up within the same second."""
+    now = datetime.now().astimezone()
+    if precise:
+        return now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+    return now.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _file_date(path):
+    try:
+        return datetime.fromtimestamp(os.stat(path).st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def report_path():
+    return os.path.join(REPORT_DIR, "report.csv") if REPORT_DIR else ""
+
+
+def report_load():
+    """Read the existing report, keyed by (filename, first_seen)."""
+    global _report
+    _report = {}
+    path = report_path()
+    if not path:
+        return
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as fh:
+            for row in csv.DictReader(fh):
+                key = (row.get("filename", ""), row.get("first_seen", ""))
+                if key[0]:
+                    _report[key] = {c: row.get(c, "") or "" for c in REPORT_COLUMNS}
+    except (OSError, csv.Error):
+        _report = {}        # unreadable or corrupt: start over rather than lose the run
+
+
+def report_note(path, status, destination="", reason="", file_date=None):
+    """Record where 'path' stands. Called once per file per run.
+
+    Reuses the file's open row if it has one -- counting a retry -- and opens a
+    new one otherwise. Success closes the row.
+    """
+    if _report is None or not REPORT_DIR:
+        return
+    name = os.path.basename(path)
+    open_rows = [k for k, r in _report.items()
+                 if k[0] == name and r.get("status") != "success"]
+    if open_rows:
+        key = max(open_rows, key=lambda k: k[1])        # the most recent one
+        row = _report[key]
+        if key not in _report_seen:
+            row["retries"] = str(int(row.get("retries") or 0) + 1)
+    else:
+        key = (name, _now(precise=True))
+        row = dict.fromkeys(REPORT_COLUMNS, "")
+        row.update(filename=name, first_seen=key[1], retries="0")
+        _report[key] = row
+
+    _report_seen.add(key)
+    row["status"] = status
+    # On success the source is already gone, so the caller passes the date it
+    # read before the move; everywhere else the file is still there to stat.
+    row["file_date"] = (file_date if file_date is not None else _file_date(path)) or row["file_date"]
+    if destination:
+        row["destination"] = destination
+    row["reason"] = reason
+    if status == "success":
+        row["moved_at"] = _now()
+    return key
+
+
+def report_save():
+    """Write the report out atomically, dropping rows past their retention."""
+    path = report_path()
+    if _report is None or not path:
+        return
+    try:
+        os.makedirs(REPORT_DIR, exist_ok=True)
+    except OSError as exc:
+        log("ERROR", "cannot create report directory '%s' cause='%s'" % (REPORT_DIR, why(exc)))
+        return
+
+    rows = [r for k, r in _report.items() if k in _report_seen or _report_keep(r)]
+    rows.sort(key=lambda r: (r.get("first_seen", ""), r.get("filename", "")))
+    tmp = path + ".partial-%d" % os.getpid()
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(REPORT_COLUMNS))
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp, path)               # readers never see a half-written report
+    except (OSError, csv.Error) as exc:
+        _discard(tmp)
+        log("ERROR", "cannot write report '%s' cause='%s'" % (path, why(exc)))
+
+
+def _report_keep(row):
+    """Keep a row not seen this run only while it is inside the retention."""
+    if REPORT_KEEP_DAYS <= 0:
+        return True
+    stamp = row.get("moved_at") or row.get("first_seen") or ""
+    try:
+        age = datetime.now().astimezone() - datetime.fromisoformat(stamp).astimezone()
+    except ValueError:
+        return True                         # unparseable: keep rather than lose it
+    return age.days < REPORT_KEEP_DAYS
+
+
+# --------------------------------------------------------------------------- #
 # Processing
 # --------------------------------------------------------------------------- #
 def process_pair(jf, df):
@@ -571,13 +706,16 @@ def process_pair(jf, df):
 
     if os.path.islink(df):
         log("ERROR", "FAILURE move source='%s' reason='data file is a symlink' - skipped" % df)
+        report_note(df, "failed", reason="data file is a symlink")
         ERRORS += 1
         return
     if not os.path.isfile(df):
         log("ERROR", "FAILURE move source='%s' reason='data file is not a regular file' - skipped" % df)
+        report_note(df, "failed", reason="not a regular file")
         ERRORS += 1
         return
 
+    fdate = _file_date(df)          # read now: a success moves the file away
     if DEBUG:
         log("DEBUG", "processing pair: source='%s' meta='%s'" % (df, jf or "(none)"))
 
@@ -593,24 +731,29 @@ def process_pair(jf, df):
     if status == "INVALID":
         log("ERROR", "FAILURE move source='%s' reason='invalid JSON' cause='%s' - left in place"
             % (jf, result.get("cause", "")))                     # jf is always set here
+        report_note(df, "failed", reason="invalid JSON: " + result.get("cause", ""))
         INVALID += 1
         return
     if status == "REQUIRED_FAIL":
         log("ERROR", "FAILURE move source='%s' reason='missing/empty required field(s): %s' - left in place"
             % (src, ", ".join(result["missing"])))
+        report_note(df, "failed", reason="missing required field(s): " + ", ".join(result["missing"]))
         ERRORS += 1
         return
     if status == "NOMATCH":
         log("WARN", "no rule matched source='%s' (%s) - left in place" % (src, result["summary"]))
+        report_note(df, "unmatched", reason="no rule matched")
         UNMATCHED += 1
         return
     if status == "UNSAFE":
         log("ERROR", "FAILURE move source='%s' dest='%s' reason='unsafe or empty destination' - left in place"
             % (df, result["dest"]))
+        report_note(df, "failed", result["dest"], "unsafe or empty destination")
         ERRORS += 1
         return
     if status != "OK":
         log("ERROR", "FAILURE move source='%s' reason='resolver error' - left in place" % src)
+        report_note(df, "failed", reason="resolver error")
         ERRORS += 1
         return
 
@@ -634,6 +777,7 @@ def process_pair(jf, df):
             log("ERROR", "FAILURE move source='%s' dest='%s' reason='destination directory does not "
                          "exist (CREATE_DIRS is no)' (rule #%s: %s) - left in place"
                 % (df, dest, ruleno, ruletext))
+            report_note(df, "failed", dest, "destination directory does not exist")
             ERRORS += 1
             return
         try:
@@ -642,6 +786,7 @@ def process_pair(jf, df):
             log("ERROR", "FAILURE move source='%s' dest='%s' reason='cannot create destination' "
                          "cause='%s' (rule #%s: %s) - left in place"
                 % (df, dest, why(exc), ruleno, ruletext))
+            report_note(df, "failed", dest, "cannot create destination: " + why(exc))
             log("ERROR", "DIAG create dest='%s' %s"
                 % (dest, diagnose(df, _nearest_existing(dest), exc)))
             ERRORS += 1
@@ -657,6 +802,7 @@ def process_pair(jf, df):
                      "cause='%s' (rule #%s: %s)"
             % (df, dest, target, step, why(exc), ruleno, ruletext))
         log("ERROR", "DIAG move %s" % diagnose(df, dest, exc))
+        report_note(df, "failed", dest, "copied but the source could not be removed: " + why(exc))
         ERRORS += 1
         return
     if step:
@@ -664,6 +810,7 @@ def process_pair(jf, df):
                      "(rule #%s: %s) - left in place"
             % (df, dest, step, why(exc), ruleno, ruletext))
         log("ERROR", "DIAG move %s" % diagnose(df, dest, exc))
+        report_note(df, "failed", dest, "%s: %s" % (step, why(exc)))
         ERRORS += 1
         return
 
@@ -674,12 +821,14 @@ def process_pair(jf, df):
         if jstep:
             log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
                          "failed' step='%s' cause='%s'" % (df, target, jstep, why(jexc)))
+            report_note(df, "failed", dest, "sidecar archiving failed: " + why(jexc))
             log("ERROR", "DIAG archive %s" % diagnose(jf, JSON_ARCHIVE_DIR, jexc))
             ERRORS += 1
             return
 
     log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
         % (df, dest, target, ruleno, ruletext, jtarget))
+    report_note(df, "success", dest, file_date=fdate)
     PROCESSED += 1
 
 
@@ -739,6 +888,7 @@ def process_all():
             pairs.append((None, p))
             continue
         log("INFO", "waiting for metadata source='%s' reason='no .json sidecar yet' - left in place" % p)
+        report_note(p, "pending", reason="no .json sidecar yet")
         INCOMPLETE += 1
 
     if not pairs:
@@ -759,10 +909,12 @@ def process_all():
     for (jf, df), sig0 in zip(pairs, before):
         if (_sig(jf) if jf else None, _sig(df)) != sig0:
             log("INFO", "still changing source='%s' - will retry next run" % df)
+            report_note(df, "pending", reason="still being written")
             UNSTABLE += 1
             continue
         if jf in busy or df in busy:
             log("INFO", "still changing source='%s' reason='open for writing' - will retry next run" % df)
+            report_note(df, "pending", reason="open for writing")
             UNSTABLE += 1
             continue
         process_pair(jf, df)
@@ -843,7 +995,7 @@ def build_parser():
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
-    global LOG_MAX_BYTES, LOG_KEEP
+    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -884,6 +1036,11 @@ def main(argv):
         LOG_MAX_BYTES = int(CFG.settings.get("LOG_MAX_MB", "10")) * 1024 * 1024
         LOG_KEEP = int(CFG.settings.get("LOG_KEEP", "5"))
     except ValueError:                      # validate() reports it; keep the defaults
+        pass
+    REPORT_DIR = CFG.settings.get("REPORT_DIR", "")
+    try:
+        REPORT_KEEP_DAYS = int(CFG.settings.get("REPORT_KEEP_DAYS", "90"))
+    except ValueError:
         pass
     CREATE_DIRS = engine.setting_bool(CFG.settings, "CREATE_DIRS")
     DISPATCH_WITHOUT_JSON = engine.setting_bool(CFG.settings, "DISPATCH_WITHOUT_JSON")
@@ -950,7 +1107,11 @@ def main(argv):
             return 0
         # keep lock_fd open for the lifetime of the process
 
+    if not DRY_RUN:
+        report_load()
     rc = process_all()
+    if not DRY_RUN:
+        report_save()
 
     log("INFO", "run summary: processed=%d unmatched=%d invalid=%d incomplete=%d unstable=%d errors=%d"
         % (PROCESSED, UNMATCHED, INVALID, INCOMPLETE, UNSTABLE, ERRORS))

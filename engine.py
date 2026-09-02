@@ -46,7 +46,7 @@ RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
     "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
     "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
-    "LOG_MAX_MB", "LOG_KEEP",
+    "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS",
 }
 
 # The yes/no settings, all validated the same way and all overridable from the
@@ -758,7 +758,8 @@ class Config:
         if not re.fullmatch(r"[0-9]+", st):
             self.errors.append("STABLE_SECONDS must be a non-negative integer (got '%s')" % st)
         for name, what in (("LOG_MAX_MB", "a non-negative integer (0 disables rotation)"),
-                           ("LOG_KEEP", "a non-negative integer")):
+                           ("LOG_KEEP", "a non-negative integer"),
+                           ("REPORT_KEEP_DAYS", "a non-negative integer (0 keeps every row)")):
             val = self.settings.get(name)
             if val is not None and not re.fullmatch(r"[0-9]+", val.strip()):
                 self.errors.append("%s must be %s (got '%s')" % (name, what, val))
