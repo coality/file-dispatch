@@ -700,10 +700,10 @@ class TestE2E(E2EBase):
 
     # 58: ternary expression in a variable definition
     def test_58_ternary_variable(self):
-        self.write_conf('BU = "core" if $category = "central" else $category\n'
-                        '$type = "*" => "$OUT/$BU"')
-        self.mkpair("a", "xml", '{"category":"central","type":"t"}')
-        self.mkpair("b", "xml", '{"category":"north","type":"t"}')
+        self.write_conf('T = "core" if $unit = "central" else $unit\n'
+                        '$type = "*" => "$OUT/$T"')
+        self.mkpair("a", "xml", '{"unit":"central","type":"t"}')
+        self.mkpair("b", "xml", '{"unit":"north","type":"t"}')
         self.dispatch()
         self.exists(self.op("core", "a.xml"))
         self.exists(self.op("north", "b.xml"))

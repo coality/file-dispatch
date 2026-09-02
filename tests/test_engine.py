@@ -249,8 +249,8 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(self._resolve(cfg, {"s": "z", "u": "y"})["status"], "NOMATCH")
 
     def test_ternary_variable(self):
-        cfg = self._config(self.BASE + 'BU = "core" if $unit = "central" else $unit\n'
-                                       '$category = "x" => "$OUT/$BU"\n')
+        cfg = self._config(self.BASE + 'T = "core" if $unit = "central" else $unit\n'
+                                       '$category = "x" => "$OUT/$T"\n')
         self.assertEqual(cfg.errors, [])
         self.assertEqual(self._resolve(cfg, {"category": "x", "unit": "central"})["dest"], "/out/core")
         self.assertEqual(self._resolve(cfg, {"category": "x", "unit": "north"})["dest"], "/out/north")
