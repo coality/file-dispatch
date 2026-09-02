@@ -9,6 +9,22 @@ logging. The parsing / matching core lives in engine.py (imported below).
 
 Normally launched through dispatch.sh (a tiny shell launcher that just picks the
 Python interpreter), but it can also be run directly: `python3 dispatch.py ...`.
+
+What one run does, in order:
+
+  1. read + validate the config          -> stop here on --check, or on errors
+  2. take an exclusive lock on LOG_DIR   -> a slow run never overlaps the next
+                                            cron tick (skipped by --dry-run)
+  3. pair up INCOMING_DIR                -> <base>.json + exactly one sibling
+  4. wait for the pairs to settle        -> size/mtime unchanged, nobody
+                                            writing (see paths_open_for_write)
+  5. per pair: resolve, move, archive    -> engine decides, this file acts
+
+Every step that gives up on a file leaves it exactly where it was and logs why,
+so the next run picks it up again. Nothing is ever deleted, and a file is only
+ever moved after its destination has been confirmed usable -- which is what
+lets a cron job run unattended.
+
 Standard library only. Requires Python 3.9 or newer.
 """
 
@@ -124,6 +140,12 @@ def _dest_problem(path):
 
 
 def collision_safe(directory, name):
+    """A path under 'directory' for 'name' that does not overwrite anything.
+
+    Two files with the same name arriving on different days is normal, so a
+    collision suffixes the timestamp (and then the pid, if a run is fast enough
+    to collide within one second) instead of replacing what is already there.
+    """
     path = os.path.join(directory, name)
     if os.path.exists(path):
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -218,6 +240,17 @@ def _sig(path):
 # Processing
 # --------------------------------------------------------------------------- #
 def process_pair(jf, df):
+    """Dispatch one settled pair: jf is the .json sidecar, df the data file.
+
+    A sequence of gates, each of which either logs a reason and returns
+    (leaving both files untouched) or falls through to the next:
+      file is a real, non-symlink file -> engine resolves it -> destination is
+      usable -> move the data file -> archive the sidecar.
+
+    The order matters at the end: the data file moves first and the sidecar is
+    archived second, so an interruption leaves the sidecar behind rather than
+    losing track of a file that has already moved.
+    """
     global PROCESSED, INVALID, ERRORS, UNMATCHED
     jbase = os.path.basename(jf)
     dbase = os.path.basename(df)
@@ -316,6 +349,15 @@ def process_pair(jf, df):
 
 
 def process_all():
+    """Scan INCOMING_DIR, pair the files, let the pairs settle, dispatch them.
+
+    A unit of work is <base>.json plus exactly one sibling <base>.<ext>. Both
+    halves being present is what says the producer is done announcing a file,
+    so anything unpaired is simply left for a later run: a sidecar with no data
+    file yet, a data file whose sidecar has not arrived, and also the ambiguous
+    case of several data files sharing one base name, which is reported rather
+    than guessed at.
+    """
     global INCOMPLETE, UNSTABLE
     if not os.path.isdir(INCOMING_DIR):
         log("ERROR", "incoming directory does not exist: '%s'" % INCOMING_DIR)
@@ -360,7 +402,14 @@ def process_all():
     if not pairs:
         return 0
 
-    # Stability / IO gate: snapshot, wait once, re-check.
+    # Stability / IO gate. A file still being copied in must not be moved: the
+    # move would truncate it, and across filesystems the tail would be lost.
+    # Two independent checks, because each has a blind spot the other covers:
+    #   1. size+mtime before and after a pause -- catches a file visibly growing,
+    #      but not a slow or buffered producer that happens to be idle just now
+    #   2. is anyone holding it open for writing -- catches exactly that case
+    # One sleep for the whole batch, not one per file, and one open-files scan
+    # for all paths at once; both are snapshots of the same instant.
     before = [(_sig(jf), _sig(df)) for (jf, df) in pairs]
     if STABLE_SECONDS > 0:
         time.sleep(STABLE_SECONDS)
@@ -396,6 +445,13 @@ def maybe_reexec(config_path):
     """Honor the config's PYTHON setting by re-executing with that interpreter.
 
     A bad PYTHON path is a hard error (exit 3), mirroring the old behavior.
+
+    This runs before anything else, and parses the config a second time on its
+    own: the interpreter has to be chosen before the real startup, and that
+    choice lives in the very file we are about to read properly. The
+    _DISPATCH_REEXEC marker in the environment is what stops the replacement
+    process from doing it all over again -- os.execv keeps the environment, so
+    without it a PYTHON pointing at a different-but-equivalent path would loop.
     """
     if os.environ.get("_DISPATCH_REEXEC"):
         return
@@ -507,6 +563,13 @@ def main(argv):
             os.makedirs(JSON_ARCHIVE_DIR, exist_ok=True)
         except OSError:
             pass
+        # One run at a time. A batch that takes longer than the cron interval
+        # would otherwise have the next tick processing the same pairs: both
+        # runs resolve the same file, and one of the two moves fail. The lock
+        # is non-blocking on purpose -- a second run exits quietly (status 0,
+        # this is normal, not an error) rather than queueing up behind the
+        # first. It is released when the process ends, whichever way it ends,
+        # so no stale lock file can wedge the next run.
         lock_path = os.path.join(LOG_DIR, ".dispatch.lock")
         try:
             lock_fd = open(lock_path, "w")

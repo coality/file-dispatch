@@ -12,6 +12,29 @@ Main entry points:
                                                   .errors, .warnings
   Config().resolve(jsonfile, debug)            -> {status, dest, ruleno, ...}
 
+How a file gets routed, end to end:
+
+  dispatch.conf  --parse-->  settings + vars + rules      (once, at startup)
+                                        |
+  <base>.json    --json.load-->  ctx (one entry per field)
+                                        |
+                             vars evaluated top to bottom,
+                             each one added to the same ctx
+                                        |
+                      rules tried in file order, first match wins
+                                        |
+                        destination = the rule's value expression
+                                    assembled against ctx
+
+So a rule condition and a variable both see exactly the same namespace: JSON
+fields first, then whatever variables were defined above the line being read.
+That single ctx is why "$OUT/$group" works the same in a rule as in a variable.
+
+Three small languages live here, in this order:
+  1. values       "text" $field func(...) a + b   -> assemble_value()
+  2. conditions   $field OP value, AND/OR/( )     -> parse_condition() + AST
+  3. the file     settings / variables / rules    -> Config.parse()
+
 Standard library only.
 """
 
@@ -154,6 +177,19 @@ def expand_refs(s, ctx):
     return "".join(out)
 
 
+# --------------------------------------------------------------------------- #
+# The value language
+#
+# A value is a run of segments glued together, left to right:
+#     "quoted"   $refs expanded inside it
+#     'quoted'   taken literally, $ included
+#     func(...)  int() / upper() / lower(), applied to the value inside
+#     bare       $refs expanded; anything else is literal text
+# Segments may simply touch ($a"/"$b) or be joined with + ($a + "/" + $b).
+# assemble_value() below is the single place where all of this happens, which
+# is why one change there covers variables, ternary branches, rule
+# destinations, the right-hand side of a condition and IN list items alike.
+# --------------------------------------------------------------------------- #
 def _cast_int(v):
     """Cast a numeric string to its integer form; leave non-numbers unchanged."""
     try:
@@ -352,6 +388,13 @@ def tokenize_condition(cond):
         if cond[i:i + 2] == "OR" and (i + 2 == n or cond[i + 2] in " \t()"):
             toks.append(("OR",)); i += 2; continue
         # An atom: consume up to a top-level boundary (AND / OR / grouping ')').
+        # "Top-level" is the whole difficulty here. An atom may itself contain
+        # quotes and parentheses -- $x IN ("a", "b") -- and those must not be
+        # mistaken for the grammar's own ( ) or for a keyword:
+        #   q      != None while inside a quoted string: nothing counts there
+        #   depth  > 0 while inside an IN list: its ")" belongs to the atom
+        # so only a ")" at depth 0 ends the atom, and only whitespace at
+        # depth 0 is worth peeking past for an AND / OR.
         start, depth, q = i, 0, None
         while i < n:
             ch = cond[i]
@@ -365,9 +408,11 @@ def tokenize_condition(cond):
                 depth += 1; i += 1; continue
             if ch == ")":
                 if depth == 0:
-                    break
+                    break               # closes a grouping, not part of us
                 depth -= 1; i += 1; continue
             if depth == 0 and ch in " \t":
+                # Whitespace only ends the atom if a keyword follows it:
+                # "$a = x AND $b = y" stops here, "$a IN (x, y)" does not.
                 j = i
                 while j < n and cond[j] in " \t":
                     j += 1
@@ -401,6 +446,12 @@ def parse_condition(cond):
     return node
 
 
+# The three functions below are a textbook recursive-descent parser, one per
+# precedence level: _parse_or calls _parse_and calls _parse_factor. Because OR
+# sits at the outermost level and AND inside it, AND binds tighter -- that is
+# where "A OR B AND C" reading as "A OR (B AND C)" comes from, without any
+# precedence table. `pos` is a one-element list used as a mutable cursor shared
+# by all three (a plain int would be copied, not advanced, for the caller).
 def _parse_or(toks, pos):
     node = _parse_and(toks, pos)
     while pos[0] < len(toks) and toks[pos[0]][0] == "OR":
@@ -587,6 +638,21 @@ class Config:
         self.seen = set()
 
     def parse(self, path):
+        """Read the config file into settings / vars / rules.
+
+        Does not stop at the first problem: everything wrong is collected in
+        .errors so a single --check reports all of it. A line that fails to
+        parse still leaves a placeholder behind (a rule with no AST, a variable
+        holding its raw text), so the lines after it are checked too instead of
+        the first mistake hiding the rest.
+
+        Each non-empty line is one of three kinds, tried in this order:
+          1. a rule        <condition> => <destination>   (contains a top-level =>)
+          2. a setting     NAME = value, NAME in RESERVED
+          3. a variable    NAME = value, any other identifier
+        Rules are recognised first because a rule also contains an "=", so the
+        assignment test would otherwise swallow every rule in the file.
+        """
         try:
             fh = open(path, "r", encoding="utf-8")
         except OSError:
@@ -684,6 +750,19 @@ class Config:
     # Per-file resolution
     # ----------------------------------------------------------------------- #
     def resolve(self, jsonfile, debug):
+        """Decide where one file goes, from its JSON sidecar.
+
+        Returns a dict whose "status" the caller switches on:
+          INVALID       the sidecar is not readable, or not a JSON object
+          REQUIRED_FAIL a REQUIRED field is missing or empty ("missing" lists them)
+          NOMATCH       no rule matched ("summary" describes the fields, for the log)
+          UNSAFE        a rule matched but its destination is empty or has ".."
+          OK            "dest" is where the file goes, "ruleno"/"ruletext" say why
+
+        Three phases, in this order: read the fields, evaluate the variables on
+        top of them, then try the rules. Nothing is cached between files -- each
+        sidecar gets a fresh ctx, since every variable may depend on its fields.
+        """
         trace = []
         try:
             with open(jsonfile, "r", encoding="utf-8") as jf:
