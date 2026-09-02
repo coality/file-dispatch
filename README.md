@@ -148,7 +148,7 @@ like `if`/`elif`/`else`. The `<condition>` uses the **same operators as rules**
 (see below); branches may be literals, `$fields`, functions, or concatenations:
 
 ```ini
-BU      = "core" if $category = "central" else $category
+TEAM    = "core" if $unit = "central" else $unit
 TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 SIZEDIR = "xl" if $bytes >= "1000000" else "l" if $bytes >= "1000" else "s"
 CHANNEL = "billing" if $type IN ("invoice", "credit", "debit") else "general"

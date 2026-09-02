@@ -83,7 +83,7 @@ TARGET  = $group + "/" + $category     # same thing, written with "+"
 # A value can also be a Python-style ternary:  A if <condition> else B
 # The <condition> uses the same operators as rules. Ternaries chain like if/elif/else.
 # Functions available in a value: int(...), upper(...), lower(...).
-BU      = "core" if $category = "central" else $category
+TEAM    = "core" if $unit = "central" else $unit
 TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 SHARD   = int($id)                     # e.g. "007" -> "7"
 #
@@ -100,7 +100,7 @@ INOUT   = "inbound" if $filename STARTSWITH "IN-" else "outbound"             # 
 ALERT   = "urgent" if $note CONTAINS "URGENT" else "normal"                   # CONTAINS
 ZONE    = "priority" if $vip = "yes" OR $tier = "gold" else "standard"        # OR
 SECURE  = "restricted" if ($region = "EU" AND $pii = "yes") else "open"       # AND + ( )
-ORG     = "core" if $bu = "central" else upper($bu)         # function in a branch
+ORG     = "core" if $bu = "central" else upper($bu)       # function in a branch
 OWNER   = $owner if $owner != "" else "unassigned"        # fill-in-a-default pattern
 BUCKET  = $group"/"$category if $group != "" else "misc"  # concatenation in a branch
 
