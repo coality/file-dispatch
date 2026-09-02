@@ -102,6 +102,7 @@ with a large cookbook of rule and variable examples.
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
+| `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
 | `REQUIRED` | | — | comma-separated `$field`s that must be present **and** non-empty, else the file is left in place with an error; an explicit `null` counts as present |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -111,9 +112,53 @@ JSON_ARCHIVE_DIR = "/data/archive/json"  # where processed .json files go
 LOG_DIR          = "/data/logs"          # holds dispatch.log + errors.log
 STABLE_SECONDS   = 2                     # optional: wait for I/O to settle
 CREATE_DIRS      = no                    # optional: create missing destinations?
+DISPATCH_WITHOUT_JSON = no               # optional: handle files with no sidecar?
 REQUIRED         = $category, $group     # optional: fields that must be present
 # PYTHON         = "/usr/bin/python3"    # optional: interpreter to use
 ```
+
+### System metadata
+
+Three fields come from the filesystem, not from the sidecar, and are available
+to every rule and variable:
+
+| Field | Value | Example |
+|-------|-------|---------|
+| `$Filename` | base name, extension included | `orders-42.csv` |
+| `$Filesize` | size in bytes, as digits — the numeric operators work on it | `10485760` |
+| `$Filedatetime` | mtime, local time, `YYYY-MM-DDTHH:MM:SS` | `2026-09-02T13:31:20` |
+
+```ini
+$Filename ENDSWITH ".csv"      => "$OUT/csv"
+$Filesize > "10000000"         => "$OUT/large"
+$Filedatetime STARTSWITH "2026-09" => "$OUT/2026-09"
+```
+
+A sidecar field of the same name **wins**: the producer's metadata is the
+authority, these only fill in what it does not say. `--debug` labels each field
+`json field:` or `system field:` so you can see which is which.
+
+### Files with no sidecar
+
+By default a data file with no `<base>.json` is not ready — the producer
+announces a file by writing both halves — so it waits for a later run and is
+counted in `incomplete=`. With `DISPATCH_WITHOUT_JSON = yes` it becomes a unit
+of work of its own: rules see only the three system fields (every other
+`$field` is empty), and since there is no sidecar, the log ends `archived='-'`.
+
+```ini
+DISPATCH_WITHOUT_JSON = yes
+$Filename ENDSWITH ".csv"  => "$OUT/csv"
+```
+
+⚠️ **The producer's ordering matters.** If it writes the data file first and its
+sidecar a moment later, turning this on means the data file can be dispatched
+before the sidecar arrives — leaving the sidecar orphaned in `INCOMING_DIR`.
+Turn it on only when files genuinely arrive alone, or raise `STABLE_SECONDS`
+past the gap between the two writes.
+
+Note that `$field = "*"` matches an **absent or empty** field too, so it is not
+a test for "the sidecar provided this". Use `$field != ""` for that.
 
 ### Creating destinations
 

@@ -952,6 +952,71 @@ class TestE2E(E2EBase):
         self.assertEqual(len(dry), 1)
         self.assertEqual([l[len("DRY-RUN "):] for l in dry], real)
 
+    # 77: system metadata is available to rules for a file that HAS a sidecar.
+    def test_77_system_fields_alongside_a_sidecar(self):
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/csv"\n'
+                        '$Filesize > "100"         => "$OUT/big"\n'
+                        '$category = "*"           => "$OUT/rest"')
+        self.mkpair("a", "csv", '{"category":"c"}')
+        self.mkpair("b", "bin", '{"category":"c"}', data="x" * 200)
+        self.mkpair("c", "bin", '{"category":"c"}', data="x")
+        self.dispatch()
+        self.exists(self.op("csv", "a.csv"))
+        self.exists(self.op("big", "b.bin"))
+        self.exists(self.op("rest", "c.bin"))
+
+    # 78: a sidecar field of the same name wins over the system one.
+    def test_78_sidecar_overrides_a_system_field(self):
+        self.write_conf('$Filename = "renamed" => "$OUT/from_json"\n'
+                        '$Filename = "*"       => "$OUT/from_system"')
+        self.mkpair("a", "xml", '{"Filename":"renamed"}')
+        self.mkpair("b", "xml", '{"other":"x"}')
+        self.dispatch()
+        self.exists(self.op("from_json", "a.xml"))
+        self.exists(self.op("from_system", "b.xml"))
+
+    # 79: without DISPATCH_WITHOUT_JSON, a file with no sidecar still waits.
+    def test_79_orphan_waits_by_default(self):
+        self.write_conf('$Filename = "*" => "$OUT/any"')
+        self.write_raw(self.inc("lonely.csv"), "DATA")
+        self.dispatch()
+        self.exists(self.inc("lonely.csv"))
+        self.in_log("no .json sidecar yet")
+        self.in_log("incomplete=1")
+        self.no_files_under(self.out)
+
+    # 80: with it on, the orphan is dispatched on its system metadata alone,
+    #     and there is nothing to archive.
+    def test_80_orphan_dispatched_on_system_metadata(self):
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/csv"\n'
+                        '$Filesize > "100"         => "$OUT/big"',
+                        extra="DISPATCH_WITHOUT_JSON = yes")
+        self.write_raw(self.inc("lonely.csv"), "DATA")
+        self.write_raw(self.inc("heavy.bin"), "x" * 200)
+        self.write_raw(self.inc("small.bin"), "x")
+        self.dispatch()
+        self.exists(self.op("csv", "lonely.csv"))
+        self.exists(self.op("big", "heavy.bin"))
+        self.exists(self.inc("small.bin"))          # matched nothing, stays put
+        self.in_log("archived='-'")                 # no sidecar to archive
+        self.no_files_under(self.archive)
+
+    # 81: a paired file is still paired when the setting is on -- the sidecar
+    #     is read and archived exactly as before.
+    def test_81_pairs_unaffected_by_the_setting(self):
+        self.write_conf('$category = "r" => "$OUT/r"', extra="DISPATCH_WITHOUT_JSON = yes")
+        self.mkpair("a", "xml", '{"category":"r"}')
+        self.dispatch()
+        self.exists(self.op("r", "a.xml"))
+        self.exists(os.path.join(self.archive, "a.json"))
+
+    # 82: an unusable DISPATCH_WITHOUT_JSON value is refused by --check.
+    def test_82_bad_dispatch_without_json_value(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="DISPATCH_WITHOUT_JSON = sometimes")
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DISPATCH_WITHOUT_JSON must be yes or no", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
