@@ -53,6 +53,8 @@ CREATE_DIRS = False
 DISPATCH_WITHOUT_JSON = False
 LOG_FILE = ""
 ERROR_LOG = ""
+LOG_MAX_BYTES = 10 * 1024 * 1024        # 0 disables rotation
+LOG_KEEP = 5
 
 DRY_RUN = False
 DEBUG = False
@@ -73,8 +75,50 @@ def sanitize(s):
     return s.translate(_CTRL)
 
 
+def _rotate(path, incoming):
+    """Roll 'path' over before writing 'incoming' bytes would exceed the cap.
+
+    dispatch.log -> dispatch.log.1 -> ... -> dispatch.log.<LOG_KEEP>, oldest
+    dropped. Plain renames, so the files stay greppable and the newest is
+    always the unsuffixed one. LOG_MAX_BYTES = 0 turns this off, for hosts
+    where logrotate already owns these files.
+
+    Rotation happens under the run lock, so two real runs cannot interleave
+    here. A --dry-run takes no lock, so it could in principle rotate at the
+    same instant as a real run; the worst outcome is a few lines landing in
+    the file that has just been rolled over.
+    """
+    if LOG_MAX_BYTES <= 0:
+        return
+    try:
+        if os.path.getsize(path) + incoming <= LOG_MAX_BYTES:
+            return
+    except OSError:
+        return                              # not there yet: nothing to rotate
+    if LOG_KEEP <= 0:
+        try:
+            os.remove(path)                 # keep nothing: start over
+        except OSError:
+            pass
+        return
+    try:
+        os.remove("%s.%d" % (path, LOG_KEEP))
+    except OSError:
+        pass
+    for i in range(LOG_KEEP - 1, 0, -1):
+        try:
+            os.replace("%s.%d" % (path, i), "%s.%d" % (path, i + 1))
+        except OSError:
+            pass
+    try:
+        os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def _append(path, line):
     try:
+        _rotate(path, len(line.encode("utf-8")) + 1)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError:
@@ -799,6 +843,7 @@ def build_parser():
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
+    global LOG_MAX_BYTES, LOG_KEEP
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -835,6 +880,11 @@ def main(argv):
         STABLE_SECONDS = int(CFG.settings.get("STABLE_SECONDS", "2"))
     except ValueError:
         STABLE_SECONDS = 2
+    try:
+        LOG_MAX_BYTES = int(CFG.settings.get("LOG_MAX_MB", "10")) * 1024 * 1024
+        LOG_KEEP = int(CFG.settings.get("LOG_KEEP", "5"))
+    except ValueError:                      # validate() reports it; keep the defaults
+        pass
     CREATE_DIRS = engine.setting_bool(CFG.settings, "CREATE_DIRS")
     DISPATCH_WITHOUT_JSON = engine.setting_bool(CFG.settings, "DISPATCH_WITHOUT_JSON")
     # The command line wins: the config is consulted only where no flag was
