@@ -807,11 +807,17 @@ class Config:
                              % ("json" if k in data else "system", k,
                                 "null" if k in ctx.nulls else "'%s'" % ctx[k]))
 
+        # REQUIRED is a contract on what the sidecar must say, so it is only
+        # checked when there is a sidecar. A file dispatched on its system
+        # metadata alone has no such contract to honour -- checking it there
+        # would make REQUIRED and DISPATCH_WITHOUT_JSON mutually exclusive,
+        # since every sidecar-less file would fail on the very first field.
         # An explicit null counts as present: the producer said "no value here",
         # which is an answer. Absent and "" still fail.
-        missing = [f for f in self.required if f not in ctx.nulls and not ctx.get(f)]
-        if missing:
-            return {"status": "REQUIRED_FAIL", "missing": missing, "debug": trace}
+        if jsonfile is not None:
+            missing = [f for f in self.required if f not in ctx.nulls and not ctx.get(f)]
+            if missing:
+                return {"status": "REQUIRED_FAIL", "missing": missing, "debug": trace}
 
         for name, node in self.vars:
             ctx[name] = eval_vexpr(node, ctx, ctx.get(name, ""))

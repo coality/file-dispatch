@@ -1021,6 +1021,21 @@ class TestE2E(E2EBase):
         self.exists(self.op("r", "a.xml"))
         self.exists(os.path.join(self.archive, "a.json"))
 
+    # 81b: REQUIRED is a contract on the sidecar, so it is not held against a
+    #      file that has none -- otherwise the two settings could not coexist.
+    def test_81b_required_does_not_apply_without_a_sidecar(self):
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/csv"',
+                        extra="DISPATCH_WITHOUT_JSON = yes\nREQUIRED = $category")
+        self.write_raw(self.inc("lonely.csv"), "DATA")          # no sidecar at all
+        self.mkpair("ok", "csv", '{"category":"c"}')            # sidecar, field present
+        self.mkpair("ko", "csv", '{"other":"x"}')               # sidecar, field missing
+        self.dispatch()
+        self.exists(self.op("csv", "lonely.csv"))               # dispatched
+        self.exists(self.op("csv", "ok.csv"))
+        self.exists(self.inc("ko.csv"))                         # still enforced here
+        self.in_log("missing/empty required field(s): category")
+        self.assertEqual(self.errlog().count("missing/empty required field"), 1)
+
     # 82: an unusable DISPATCH_WITHOUT_JSON value is refused by --check.
     def test_82_bad_dispatch_without_json_value(self):
         self.write_conf('$category = "*" => "$OUT/r"', extra="DISPATCH_WITHOUT_JSON = sometimes")

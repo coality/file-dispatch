@@ -63,6 +63,8 @@ CREATE_DIRS      = no
 #   yes           it becomes a unit of work of its own, matched on the system
 #                 fields below alone (every other $field is empty), and moved
 #                 with nothing to archive (the log ends archived='-').
+#                 REQUIRED does not apply to such a file -- it states what a
+#                 sidecar must provide, and there is none to hold to it.
 # WARNING: if your producer writes the data file first and its .json a moment
 # later, "yes" can dispatch the data before the sidecar lands, orphaning it.
 # Turn it on only for files that genuinely arrive alone, or raise
@@ -93,6 +95,8 @@ DISPATCH_WITHOUT_JSON = no
 # (These are field references, so they stay bare.)
 # An explicit null ("status": null) counts as PRESENT and passes; a field
 # that is absent or set to "" does not. Use ISNULL to test for it.
+# This is a contract on what the SIDECAR must provide, so a file dispatched
+# without one (see DISPATCH_WITHOUT_JSON) is not checked against it.
 REQUIRED = $category, $group
 
 
