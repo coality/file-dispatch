@@ -234,8 +234,19 @@ def assemble_value(s, ctx):
     return "".join(out)
 
 
+class Fields(dict):
+    """Field values, plus the names that arrived as JSON null.
+
+    null has no string form, so it reads as "" like an absent or empty field.
+    Keeping the set apart is what lets REQUIRED and ISNULL tell them apart. An
+    attribute, not a key: a key could collide with a field of the same name in
+    an untrusted JSON.
+    """
+    nulls = frozenset()
+
+
 def parse_atom(atom):
-    """Parse '$field = value' or '$field IN (a, b)'. Return dict or None."""
+    """Parse '$field = value', '$field IN (a, b)' or '$field ISNULL'. Return dict or None."""
     atom = atom.strip()
     if atom.startswith("${"):
         rest = atom[2:]
@@ -255,6 +266,8 @@ def parse_atom(atom):
     else:
         return None
     rest = rest.strip()
+    if rest in ("ISNULL", "ISNOTNULL"):                      # no right-hand side
+        return {"op": rest, "field": name}
     if rest.startswith("IN ") or rest.startswith("IN\t") or rest.startswith("IN("):
         rest = rest[2:].strip()
         if not (rest.startswith("(") and rest.endswith(")")):
@@ -421,7 +434,8 @@ def _parse_factor(toks, pos):
 
 
 OP_SYM = {"EQ": "=", "NE": "!=", "LT": "<", "GT": ">", "LE": "<=", "GE": ">=",
-          "STARTSWITH": "STARTSWITH", "ENDSWITH": "ENDSWITH", "CONTAINS": "CONTAINS"}
+          "STARTSWITH": "STARTSWITH", "ENDSWITH": "ENDSWITH", "CONTAINS": "CONTAINS",
+          "ISNULL": "ISNULL", "ISNOTNULL": "ISNOTNULL"}
 
 
 def _to_num(s):
@@ -461,8 +475,16 @@ def compare_atom(op, lval, pat):
     return False
 
 
+def is_null(at, ctx):
+    """Truth of an ISNULL / ISNOTNULL atom."""
+    null = at["field"] in getattr(ctx, "nulls", ())
+    return null if at["op"] == "ISNULL" else not null
+
+
 def atom_matches(at, ctx):
     """Evaluate a parsed atom against ctx (used by rules and ternary conditions)."""
+    if at["op"] in ("ISNULL", "ISNOTNULL"):
+        return is_null(at, ctx)
     lval = ctx.get(at["field"], "")
     if at["op"] == "IN":
         return any(fnmatch.fnmatchcase(lval, assemble_value(it, ctx)) for it in at["items"])
@@ -643,15 +665,19 @@ class Config:
         if not isinstance(data, dict):
             return {"status": "INVALID", "debug": trace}
 
-        ctx = {}
+        ctx = Fields()
         keys = list(data.keys())
         for k in keys:
             ctx[k] = sanitize(to_str(data[k]))
+        ctx.nulls = frozenset(k for k in keys if data[k] is None)
         if debug:
             for k in keys:
-                trace.append("  json field: $%s = '%s'" % (k, ctx[k]))
+                trace.append("  json field: $%s = %s"
+                             % (k, "null" if k in ctx.nulls else "'%s'" % ctx[k]))
 
-        missing = [f for f in self.required if not ctx.get(f)]
+        # An explicit null counts as present: the producer said "no value here",
+        # which is an answer. Absent and "" still fail.
+        missing = [f for f in self.required if f not in ctx.nulls and not ctx.get(f)]
         if missing:
             return {"status": "REQUIRED_FAIL", "missing": missing, "debug": trace}
 
@@ -687,6 +713,12 @@ class Config:
         return False
 
     def _atom_true(self, at, ctx, debug, trace):
+        if at["op"] in ("ISNULL", "ISNOTNULL"):
+            res = is_null(at, ctx)
+            if debug:
+                trace.append("      atom $%s %s  -> %s"
+                             % (at["field"], at["op"], "true" if res else "false"))
+            return res
         lval = ctx.get(at["field"], "")
         if at["op"] != "IN":
             pat = assemble_value(at["rhs"], ctx)
