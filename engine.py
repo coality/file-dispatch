@@ -795,10 +795,14 @@ class Config:
             try:
                 with open(jsonfile, "r", encoding="utf-8") as jf:
                     data = json.load(jf)
-            except (OSError, ValueError):
-                return {"status": "INVALID", "debug": trace}
+            except (OSError, ValueError) as exc:
+                # Carry the reason out: "invalid JSON" alone leaves the reader
+                # opening the file by hand to find out what is wrong with it.
+                return {"status": "INVALID", "cause": sanitize(str(exc)).replace("'", ""),
+                        "debug": trace}
             if not isinstance(data, dict):
-                return {"status": "INVALID", "debug": trace}
+                return {"status": "INVALID", "debug": trace,
+                        "cause": "top level is %s, expected an object" % type(data).__name__}
 
         ctx = Fields()
         for k, v in (sysmeta or {}).items():

@@ -344,8 +344,20 @@ Each outcome is one structured line, `<STATUS> <action>` followed by
 
 ```
 [INFO]  SUCCESS move source='…/orders-42.csv' dest='/data/out/B/orders' target='…/orders-42.csv' (rule #12: …) archived='…/orders-42.json'
-[ERROR] FAILURE move source='…/bad.xml' dest='…' reason='move failed' (rule #12: …) - left in place
-[ERROR] FAILURE archive source='…/x.csv' target='…' reason='data moved but JSON archiving failed'
+[ERROR] FAILURE move source='…/bad.xml' dest='…' reason='move failed' cause='[Errno 13] Permission denied' (rule #12: …) - left in place
+[ERROR] FAILURE archive source='…/x.csv' target='…' reason='data moved but JSON archiving failed' cause='[Errno 28] No space left on device'
+```
+
+When a failure comes from the system or from a malformed sidecar, `cause=`
+carries its own words — the errno and message for an I/O failure, the position
+of the syntax error for a bad JSON — so the log says what to fix rather than
+only that something did not work:
+
+```
+reason='move failed'                cause='[Errno 13] Permission denied'
+reason='cannot create destination'  cause='[Errno 30] Read-only file system'
+reason='invalid JSON'               cause='Expecting property name enclosed in double quotes: line 1 column 11 (char 10)'
+reason='invalid JSON'               cause='top level is list, expected an object'
 ```
 
 **A dry run writes the same lines**, with `DRY-RUN` inserted after the level —
