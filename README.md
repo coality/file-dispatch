@@ -155,6 +155,31 @@ CHANNEL = "billing" if $type IN ("invoice", "credit", "debit") else "general"
 OWNER   = $owner if $owner != "" else "unassigned"      # fill-in-a-default
 ```
 
+**The `else` is optional.** Written without one, an assignment only fires when
+its condition holds; otherwise the variable **keeps the value it already had**.
+Several lines about the same variable then read like `if`/`elif`, instead of the
+last one always winning:
+
+```ini
+ST  = upper($status)                        # normalize once, test many times
+APP = "reports"  if $ST CONTAINS "REPORT"   # first match sets it ...
+APP = "invoices" if $ST CONTAINS "INVOICE"  # ... a later one overrides
+```
+
+If no line matches, the variable holds `""` — or whatever it was set to earlier,
+which is the easy way to give it a default:
+
+```ini
+STAGE = "dev"                               # default, then refine
+STAGE = "staging" if $env = "stage"
+STAGE = "prod"    if $env = "production"
+```
+
+An empty variable is not an error: it simply leaves an empty segment in the
+destination (`/out//x`). Seed a default, or end the chain with a plain `else`,
+whenever an empty value would build a path you don't want. An `if` with nothing
+after it (`X = "a" if`) is rejected by `--check`.
+
 ### Rules
 
 A rule is `condition => "destination directory"`. The **first** rule that matches
