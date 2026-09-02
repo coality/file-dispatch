@@ -861,17 +861,17 @@ class TestE2E(E2EBase):
 
     # 71: a field explicitly set to null passes REQUIRED and routes via ISNULL.
     def test_71_json_null_field(self):
-        self.write_conf('$status ISNULL    => "$OUT/no_event"\n'
-                        '$status ISNOTNULL => "$OUT/event/" + lower($status)',
+        self.write_conf('$status ISNULL    => "$OUT/unset"\n'
+                        '$status ISNOTNULL => "$OUT/set/" + lower($status)',
                         extra="REQUIRED = $category, $status")
         self.mkjson_obj("n", "csv", {"category": "alpha", "status": None,
                                      "kind": "report"})
-        self.mkjson_obj("v", "csv", {"category": "alpha", "status": "done"})
+        self.mkjson_obj("v", "csv", {"category": "alpha", "status": "Done"})
         self.mkjson_obj("e", "csv", {"category": "alpha", "status": ""})
         self.mkjson_obj("a", "csv", {"category": "alpha"})
         self.dispatch()
-        self.exists(self.op("no_event", "n.csv"))          # null -> accepted
-        self.exists(self.op("event", "done", "v.csv"))
+        self.exists(self.op("unset", "n.csv"))             # null -> accepted
+        self.exists(self.op("set", "done", "v.csv"))
         self.exists(self.inc("e.csv"))                     # "" still rejected
         self.exists(self.inc("a.csv"))                     # absent still rejected
         self.assertEqual(self.errlog().count("missing/empty required field"), 2)

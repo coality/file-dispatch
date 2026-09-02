@@ -195,12 +195,12 @@ same as an empty or absent one. Where it differs:
   Only a real JSON `null` is null: `""` and an absent field are not.
 
 ```ini
-REQUIRED = $category, $status         # passes on "status": null
+REQUIRED = $category, $status                # passes on "status": null
 
 KIND = "none" if $status ISNULL else lower($status)
 
-$status ISNULL    => $OUT + "/no_event"
-$status ISNOTNULL => $OUT + "/event/" + $KIND
+$status ISNULL    => $OUT + "/unset"
+$status ISNOTNULL => $OUT + "/set/" + $KIND
 ```
 
 Precedence is **`( )` > `AND` > `OR`**. The right-hand side of a comparison may
