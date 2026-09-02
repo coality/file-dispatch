@@ -90,6 +90,7 @@ SHARD   = int($id)                     # e.g. "007" -> "7"
 # More ternary patterns (the <condition> uses the SAME operators as rules):
 #   binary          A if <cond> else B
 #   chained (elif)  A if <c1> else B if <c2> else C
+#   no else         A if <cond>            -- see "conditional assignment" below
 #   the condition may use =, !=, <>, numeric < > <= >=, STARTSWITH/ENDSWITH/
 #   CONTAINS, IN (...), AND / OR, and ( ) grouping; branches may be literals,
 #   $fields, functions int()/upper()/lower(), or concatenations.
@@ -103,6 +104,29 @@ SECURE  = "restricted" if ($region = "EU" AND $pii = "yes") else "open"       # 
 ORG     = "core" if $bu = "central" else upper($bu)       # function in a branch
 OWNER   = $owner if $owner != "" else "unassigned"        # fill-in-a-default pattern
 BUCKET  = $group"/"$category if $group != "" else "misc"  # concatenation in a branch
+#
+# --- Conditional assignment: the "else" is OPTIONAL ------------------
+# Written without an else, an assignment only fires when its condition holds;
+# otherwise the variable KEEPS the value it already had. So several lines about
+# the same variable read like if / elif, instead of the last one always winning:
+#
+#     APP = "reports"  if $ST CONTAINS "REPORT"     # first match sets it ...
+#     APP = "invoices" if $ST CONTAINS "INVOICE"    # ... a later one overrides
+#
+# With no line matching, the variable holds "" (or whatever it was set to
+# earlier). Guard it if an empty value would build a broken path -- either seed
+# a default first, or end the chain with a plain else:
+#
+#     APP = "misc"                                  # default, then refine
+#     APP = "reports"  if $ST CONTAINS "REPORT"
+#
+# Reading order matters: definitions are evaluated top to bottom, so a variable
+# must be defined ABOVE the line that uses it. Using one too early is not an
+# error -- it simply reads as "" and leaves an empty segment in the path.
+ST      = upper($status)                # normalize once, test many times
+STAGE   = "prod"                        # a default ...
+STAGE   = "staging" if $env = "stage"   # ... refined only when it applies
+STAGE   = "dev"     if $env = "dev"
 
 
 # --- 3) RULES --------------------------------------------------------

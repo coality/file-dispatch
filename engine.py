@@ -533,27 +533,40 @@ def parse_vexpr(expr):
     """Parse a variable value expression. Returns:
          ('val', raw)                              a plain value
          ('tern', raw_true, cond_ast, else_node)   a ternary
+         ('keep',)                                 the missing else of a
+                                                   condition-only assignment
     Raises ConditionError on a malformed ternary or condition.
     """
     idx = find_top_level(expr, " if ")
     if idx is None:
+        # A trailing bare "if" has no " if " to find, so it would quietly become
+        # literal text. Now that the else is optional, that is a likely typo.
+        if find_top_level(expr.rstrip() + " ", " if ") is not None:
+            raise ConditionError("ternary 'if' without a condition in '%s'" % expr.strip())
         return ("val", expr)
-    value_true = expr[:idx]
+    value_true = expr[:idx].strip()      # so aligned "X = \"a\"   if ..." keeps no padding
     rest = expr[idx + 4:]
     eidx = find_top_level(rest, " else ")
     if eidx is None:
-        raise ConditionError("ternary 'if' without matching 'else' in '%s'" % expr.strip())
+        # "NAME = value if <cond>" with no else: assign only when the condition
+        # holds, otherwise leave NAME as it stands. Successive lines then read
+        # as if / elif instead of each one overwriting the last.
+        return ("tern", value_true, parse_condition(rest.strip()), ("keep",))
     cond = rest[:eidx].strip()
-    return ("tern", value_true, parse_condition(cond), parse_vexpr(rest[eidx + 6:]))
+    return ("tern", value_true, parse_condition(cond), parse_vexpr(rest[eidx + 6:].strip()))
 
 
-def eval_vexpr(node, ctx):
+def eval_vexpr(node, ctx, current=""):
+    """Evaluate a value expression. 'current' is what the variable being
+    defined already holds -- the value a condition-only assignment keeps."""
     if node[0] == "val":
         return assemble_value(node[1], ctx)
+    if node[0] == "keep":
+        return current
     _, value_true, cond_ast, else_node = node
     if eval_condition_ast(cond_ast, ctx):
         return assemble_value(value_true, ctx)
-    return eval_vexpr(else_node, ctx)
+    return eval_vexpr(else_node, ctx, current)
 
 
 # --------------------------------------------------------------------------- #
@@ -682,7 +695,7 @@ class Config:
             return {"status": "REQUIRED_FAIL", "missing": missing, "debug": trace}
 
         for name, node in self.vars:
-            ctx[name] = eval_vexpr(node, ctx)
+            ctx[name] = eval_vexpr(node, ctx, ctx.get(name, ""))
             if debug:
                 trace.append("  variable: %s = '%s'" % (name, ctx[name]))
 

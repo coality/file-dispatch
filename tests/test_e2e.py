@@ -876,6 +876,23 @@ class TestE2E(E2EBase):
         self.exists(self.inc("a.csv"))                     # absent still rejected
         self.assertEqual(self.errlog().count("missing/empty required field"), 2)
 
+    # 72: conditional assignment (ternary with no else) chains like if/elif.
+    def test_72_conditional_assignment_without_else(self):
+        self.write_conf('$kind = "*" => "$OUT/" + $STAGE + "/" + $APP',
+                        extra=('ST = upper($status)\n'
+                               'APP = "misc"\n'
+                               'APP = "reports"  if $ST CONTAINS "REPORT"\n'
+                               'APP = "invoices" if $ST CONTAINS "INVOICE"\n'
+                               'STAGE = "dev"\n'
+                               'STAGE = "prod" if $env = "production"'))
+        self.mkjson_obj("a", "xml", {"kind": "k", "status": "Report-9", "env": "production"})
+        self.mkjson_obj("b", "xml", {"kind": "k", "status": "invoice-2", "env": "test"})
+        self.mkjson_obj("c", "xml", {"kind": "k", "status": "other", "env": "test"})
+        self.dispatch()
+        self.exists(self.op("prod", "reports", "a.xml"))
+        self.exists(self.op("dev", "invoices", "b.xml"))
+        self.exists(self.op("dev", "misc", "c.xml"))    # no line matched -> default kept
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -68,6 +68,20 @@ class TestHelpers(unittest.TestCase):
         node = engine.parse_vexpr('$x + "-ok" if $k = "1" else $x + "-ko"')
         self.assertEqual(engine.eval_vexpr(node, ctx), "x-ok")
 
+    def test_optional_else_keeps_current_value(self):
+        node = engine.parse_vexpr('"hit" if $k = "1"')
+        # condition true -> the branch wins, whatever was there before
+        self.assertEqual(engine.eval_vexpr(node, {"k": "1"}, "before"), "hit")
+        # condition false -> the previous value survives ...
+        self.assertEqual(engine.eval_vexpr(node, {"k": "0"}, "before"), "before")
+        # ... and with nothing before it, the variable is empty.
+        self.assertEqual(engine.eval_vexpr(node, {"k": "0"}), "")
+
+    def test_ternary_branches_ignore_alignment_padding(self):
+        ctx = {"k": "1"}
+        self.assertEqual(engine.eval_vexpr(engine.parse_vexpr('"a"   if $k = "1" else   "b"'), ctx), "a")
+        self.assertEqual(engine.eval_vexpr(engine.parse_vexpr('"a"   if $k = "0" else   "b"'), ctx), "b")
+
     def test_parse_atom(self):
         self.assertEqual(engine.parse_atom('$x = "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
         a = engine.parse_atom('$s IN ("a", "b")')
@@ -99,8 +113,9 @@ class TestHelpers(unittest.TestCase):
         chained = engine.parse_vexpr('"a" if $k = "1" else "b" if $k = "2" else "c"')
         self.assertEqual(chained[0], "tern")
         self.assertEqual(chained[3][0], "tern")         # nested ternary in the else branch
-        with self.assertRaises(engine.ConditionError):
-            engine.parse_vexpr('"a" if $k = "1"')        # missing else
+        no_else = engine.parse_vexpr('"a" if $k = "1"')   # else is optional
+        self.assertEqual(no_else[0], "tern")
+        self.assertEqual(no_else[3], ("keep",))
 
     def test_atom_accepts_double_equals(self):
         self.assertEqual(engine.parse_atom('$x == "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
@@ -198,6 +213,18 @@ class TestResolve(unittest.TestCase):
                            + '$bu = "*" => "/o/" + $K\n')
         self.assertEqual(self._resolve(cfg, {"bu": "B", "e": None})["dest"], "/o/none")
         self.assertEqual(self._resolve(cfg, {"bu": "C", "e": "DONE"})["dest"], "/o/done")
+
+    def test_successive_conditional_assignments_chain(self):
+        cfg = self._config(self.BASE
+                           + 'T = upper($type)\n'
+                           + 'APP = "alpha" if $T CONTAINS "ALPHA"\n'
+                           + 'APP = "bravo" if $T CONTAINS "BRAVO"\n'
+                           + '$kind = "*" => "$OUT/" + $APP\n')
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(self._resolve(cfg, {"type": "x-Alpha-1", "kind": "k"})["dest"], "/out/alpha")
+        self.assertEqual(self._resolve(cfg, {"type": "BRAVO-9", "kind": "k"})["dest"], "/out/bravo")
+        # neither matched: APP was never assigned, so it is empty
+        self.assertEqual(self._resolve(cfg, {"type": "other", "kind": "k"})["dest"], "/out/")
 
     def test_first_rule_wins(self):
         cfg = self._config(self.BASE + '$c = "x" => "/first"\n$c = "x" => "/second"\n')
@@ -365,10 +392,15 @@ class TestConfigErrors(unittest.TestCase):
                           '$a = "x") => "/o"\n')
         self.assertTrue(any("condition" in e for e in cfg.errors), cfg.errors)
 
-    def test_ternary_missing_else(self):
+    def test_ternary_without_else_is_accepted(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
                           'X = "a" if $k = "1"\n')
-        self.assertTrue(any("else" in e for e in cfg.errors), cfg.errors)
+        self.assertEqual(cfg.errors, [])
+
+    def test_ternary_without_condition_still_fails(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          'X = "a" if\n')
+        self.assertTrue(any("condition" in e for e in cfg.errors), cfg.errors)
 
 
 if __name__ == "__main__":
