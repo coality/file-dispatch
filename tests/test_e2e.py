@@ -36,6 +36,12 @@ class E2EBase(unittest.TestCase):
             os.makedirs(d)
 
     def tearDown(self):
+        for root, dirs, _files in os.walk(self.sb):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o755)
+                except OSError:
+                    pass
         shutil.rmtree(self.sb, ignore_errors=True)
 
     # -- config / files -----------------------------------------------------
@@ -743,6 +749,68 @@ class TestE2E(E2EBase):
         self.assertEqual(r.returncode, 3)
         self.assertIn("requires Python", r.stderr)
         self.exists(self.inc("a.xml"))          # data file left in place
+
+
+    # 63: --dry-run reports a destination that could not be created.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_63_dry_run_flags_uncreatable_destination(self):
+        ro = os.path.join(self.sb, "ro")
+        os.makedirs(ro)
+        os.chmod(ro, 0o555)
+        self.write_conf('$category = "report" => "%s/sub/dest"' % ro)
+        self.mkpair("a", "xml", '{"category":"report"}')
+        r = self.dispatch("--dry-run")
+        self.assertEqual(r.returncode, 0)
+        self.in_log("DRY-RUN would FAIL source=")
+        self.in_log("cannot create destination")
+        self.in_log("errors=1")
+        self.assertNotIn("would move source=", self.log())
+        self.assertIn("would FAIL source=", self.errlog())
+        self.exists(self.inc("a.xml"))          # dry-run still moves nothing
+
+    # 64: --dry-run reports a destination directory that exists but is read-only.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_64_dry_run_flags_readonly_destination(self):
+        dest = os.path.join(self.out, "locked")
+        os.makedirs(dest)
+        os.chmod(dest, 0o555)
+        self.write_conf('$category = "report" => "$OUT/locked"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch("--dry-run")
+        self.in_log("destination directory is not writable")
+        self.in_log("errors=1")
+
+    # 65: --dry-run reports a destination whose path is blocked by a plain file.
+    def test_65_dry_run_flags_destination_blocked_by_file(self):
+        self.write_raw(os.path.join(self.out, "blocker"), "not a directory")
+        self.write_conf('$category = "report" => "$OUT/blocker/sub"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch("--dry-run")
+        self.in_log("is not a directory")
+        self.in_log("errors=1")
+
+    # 66: --dry-run also checks the archive directory it does not create.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_66_dry_run_flags_unwritable_archive_dir(self):
+        ro = os.path.join(self.sb, "ro-arch")
+        os.makedirs(ro)
+        os.chmod(ro, 0o555)
+        self.archive = os.path.join(ro, "json")
+        self.write_conf('$category = "report" => "$OUT/reports"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch("--dry-run")
+        self.in_log("JSON_ARCHIVE_DIR")
+        self.in_log("cannot create destination")
+
+    # 67: a healthy destination stays silent (no false alarm on a missing dir).
+    def test_67_dry_run_accepts_creatable_destination(self):
+        self.write_conf('$category = "report" => "$OUT/deep/nested/new"')
+        self.mkpair("a", "xml", '{"category":"report"}')
+        self.dispatch("--dry-run")
+        self.in_log("DRY-RUN would move source=")
+        self.in_log("errors=0")
+        self.assertNotIn("would FAIL", self.log())
+        self.absent(self.op("deep"))            # still creates nothing
 
 
 if __name__ == "__main__":

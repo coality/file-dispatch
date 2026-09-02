@@ -14,6 +14,10 @@
 #    ./dispatch.sh --check     validate this config, then exit (0 = OK)
 #    ./dispatch.sh --dry-run   log what WOULD happen but move NOTHING;
 #                              every log line is prefixed with "DRY-RUN".
+#                              Destinations are checked too (does the directory
+#                              exist / could it be created / is it writable?),
+#                              so a target cron could not write to shows up as
+#                              "would FAIL" instead of a move that would fail.
 #    ./dispatch.sh --debug     verbose trace: field values, variables, and the
 #                              rule resolution step by step.
 #    ./dispatch.sh             process for real (this is what cron runs)

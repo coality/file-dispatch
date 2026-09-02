@@ -79,6 +79,47 @@ def log(level, msg):
 # --------------------------------------------------------------------------- #
 # Filesystem helpers
 # --------------------------------------------------------------------------- #
+_DEST_CHECK_CACHE = {}
+
+
+def dest_problem(path):
+    """Why writing into 'path' would fail, or None if it looks usable.
+
+    Answers the question a real run only asks when it is too late: could we
+    create this destination, and could we write into it? Used by --dry-run so
+    that a broken or read-only target shows up before cron hits it. Cached:
+    many files usually share one destination.
+    """
+    if path not in _DEST_CHECK_CACHE:
+        _DEST_CHECK_CACHE[path] = _dest_problem(path)
+    return _DEST_CHECK_CACHE[path]
+
+
+def _dest_problem(path):
+    if not path:
+        return "empty destination"
+    if os.path.isdir(path):
+        if not os.access(path, os.W_OK | os.X_OK):
+            return "destination directory is not writable"
+        return None
+    if os.path.exists(path):
+        return "destination exists but is not a directory"
+    # Not there yet: a real run would create it. Walk up to the closest
+    # existing ancestor and check the missing levels could be created there.
+    parent = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.isdir(parent):
+            if not os.access(parent, os.W_OK | os.X_OK):
+                return "cannot create destination: '%s' is not writable" % parent
+            return None
+        if os.path.exists(parent):
+            return "cannot create destination: '%s' is not a directory" % parent
+        up = os.path.dirname(parent)
+        if up == parent:
+            return None
+        parent = up
+
+
 def collision_safe(directory, name):
     path = os.path.join(directory, name)
     if os.path.exists(path):
@@ -161,6 +202,12 @@ def process_pair(jf, df):
     dest, ruleno, ruletext = result["dest"], result["ruleno"], result["ruletext"]
 
     if DRY_RUN:
+        problem = dest_problem(dest)
+        if problem:
+            log("ERROR", "would FAIL source='%s' dest='%s' reason='%s' (rule #%s: %s) - would be left in place"
+                % (df, dest, problem, ruleno, ruletext))
+            ERRORS += 1
+            return
         wtarget = collision_safe(dest, dbase)
         log("INFO", "would move source='%s' dest='%s' target='%s' (rule #%s: %s); would archive '%s'"
             % (df, dest, wtarget, ruleno, ruletext, jbase))
@@ -314,9 +361,10 @@ def build_parser():
 
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
-    global DRY_RUN, DEBUG, CFG
+    global DRY_RUN, DEBUG, CFG, ERRORS
 
     args = build_parser().parse_args(argv)
+    _DEST_CHECK_CACHE.clear()
     DRY_RUN = args.dry_run
     DEBUG = args.debug
     config_path = resolve_config_path(args)
@@ -374,6 +422,11 @@ def main(argv):
 
     if DRY_RUN:
         log("INFO", "mode: no files will be moved")
+        for label, d in (("JSON_ARCHIVE_DIR", JSON_ARCHIVE_DIR), ("LOG_DIR", LOG_DIR)):
+            problem = dest_problem(d)
+            if problem:
+                log("ERROR", "%s '%s': %s" % (label, d, problem))
+                ERRORS += 1
     else:
         try:
             os.makedirs(JSON_ARCHIVE_DIR, exist_ok=True)

@@ -47,6 +47,14 @@ Both accept the same arguments:
 
 `--check`, `--dry-run`, and `--debug` can be combined (e.g. `--dry-run --debug`).
 
+`--dry-run` also checks each destination it resolves: that the directory exists
+and is writable, or that it could be created (the closest existing parent is
+writable). It checks `JSON_ARCHIVE_DIR` too, which a dry run never creates. A
+destination that a real run could not write to is reported as
+`would FAIL ... reason='...'` and counted in the `errors=` summary, instead of
+being announced as a move that would in fact fail under cron. Nothing is
+created: the check is read-only.
+
 ### Config file resolution (first one wins)
 
 1. `--config-file FILE`
