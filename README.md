@@ -49,8 +49,9 @@ Both accept the same arguments:
 `--check`, `--dry-run`, and `--debug` can be combined (e.g. `--dry-run --debug`).
 
 `--dry-run` also checks each destination it resolves: that the directory exists
-and is writable, or that it could be created (the closest existing parent is
-writable). It checks `JSON_ARCHIVE_DIR` too, which a dry run never creates. A
+and is writable, and — only when `CREATE_DIRS = yes` — that a missing one could
+be created (the closest existing parent is writable). It checks
+`JSON_ARCHIVE_DIR` too, which a dry run never creates. A
 destination that a real run could not write to is reported as
 `would FAIL ... reason='...'` and counted in the `errors=` summary, instead of
 being announced as a move that would in fact fail under cron. Nothing is
@@ -100,6 +101,7 @@ with a large cookbook of rule and variable examples.
 | `JSON_ARCHIVE_DIR` | ✅ | — | where each processed `.json` is archived (flat directory) |
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
+| `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
 | `REQUIRED` | | — | comma-separated `$field`s that must be present **and** non-empty, else the file is left in place with an error; an explicit `null` counts as present |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -108,9 +110,29 @@ INCOMING_DIR     = "/data/incoming"      # directory to watch
 JSON_ARCHIVE_DIR = "/data/archive/json"  # where processed .json files go
 LOG_DIR          = "/data/logs"          # holds dispatch.log + errors.log
 STABLE_SECONDS   = 2                     # optional: wait for I/O to settle
+CREATE_DIRS      = no                    # optional: create missing destinations?
 REQUIRED         = $category, $group     # optional: fields that must be present
 # PYTHON         = "/usr/bin/python3"    # optional: interpreter to use
 ```
+
+### Creating destinations
+
+By default (`CREATE_DIRS = no`) destination directories are **not** created: a
+rule that resolves to a directory which does not exist is an error, the file is
+left in place, and the run reports it.
+
+```
+[ERROR] FAILURE source='…/a.xml' dest='/data/out/absent'
+        reason='destination directory does not exist (CREATE_DIRS is no)' - left in place
+```
+
+That is the safe default: a typo in a rule, or a field that came through empty,
+otherwise silently builds a new tree somewhere instead of failing loudly. Set
+`CREATE_DIRS = yes` to have missing destinations created with `makedirs`.
+`--dry-run` follows the same setting, so it reports what a real run would do.
+
+`LOG_DIR` and `JSON_ARCHIVE_DIR` are the tool's own directories, not routing
+targets, and are still created regardless.
 
 ### Variables
 
