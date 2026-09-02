@@ -127,7 +127,7 @@ class TestE2E(E2EBase):
         self.exists(os.path.join(self.archive, "example.json"))
         self.absent(self.inc("example.xml"))
         self.absent(self.inc("example.json"))
-        self.in_log("SUCCESS source=")
+        self.in_log("SUCCESS move source=")
         self.in_log('(rule #7: $category = "report" => "$OUT/reports")')
         self.assertEqual(r.returncode, 0)
 
@@ -429,7 +429,7 @@ class TestE2E(E2EBase):
         self.exists(self.inc("a.json"))
         self.no_files_under(self.out)
         self.in_log("DRY-RUN mode: no files will be moved")
-        self.in_log("DRY-RUN would move source=")
+        self.in_log("DRY-RUN SUCCESS move source=")
 
     # 32
     def test_32_logs_split(self):
@@ -536,7 +536,7 @@ class TestE2E(E2EBase):
         self.write_conf('$category = "report" => "$OUT/reports"')
         self.mkpair("a", "xml", '{"category":"report"}')
         self.dispatch()
-        self.in_log("SUCCESS source=")
+        self.in_log("SUCCESS move source=")
         self.in_log("source='%s'" % self.inc("a.xml"))
         self.in_log("dest='%s'" % self.op("reports"))
         self.in_log("target='%s'" % self.op("reports", "a.xml"))
@@ -548,7 +548,7 @@ class TestE2E(E2EBase):
         self.mkpair("a", "xml", '{"category":"report"}')
         self.dispatch()
         self.exists(self.inc("a.xml"))
-        self.in_log("FAILURE source=")
+        self.in_log("FAILURE move source=")
         self.in_log("cannot create destination")
 
     # 42
@@ -764,11 +764,11 @@ class TestE2E(E2EBase):
         self.mkpair("a", "xml", '{"category":"report"}')
         r = self.dispatch("--dry-run")
         self.assertEqual(r.returncode, 0)
-        self.in_log("DRY-RUN would FAIL source=")
+        self.in_log("DRY-RUN FAILURE move source=")
         self.in_log("cannot create destination")
         self.in_log("errors=1")
-        self.assertNotIn("would move source=", self.log())
-        self.assertIn("would FAIL source=", self.errlog())
+        self.assertNotIn("SUCCESS move source=", self.log())
+        self.assertIn("FAILURE move source=", self.errlog())
         self.exists(self.inc("a.xml"))          # dry-run still moves nothing
 
     # 64: --dry-run reports a destination directory that exists but is read-only.
@@ -810,9 +810,9 @@ class TestE2E(E2EBase):
         self.write_conf('$category = "report" => "$OUT/deep/nested/new"')
         self.mkpair("a", "xml", '{"category":"report"}')
         self.dispatch("--dry-run")
-        self.in_log("DRY-RUN would move source=")
+        self.in_log("DRY-RUN SUCCESS move source=")
         self.in_log("errors=0")
-        self.assertNotIn("would FAIL", self.log())
+        self.assertNotIn("FAILURE", self.log())
         self.absent(self.op("deep"))            # still creates nothing
 
     # 68: "+" concatenation in variables, destinations and conditions.
@@ -912,9 +912,9 @@ class TestE2E(E2EBase):
         self.absent(self.op("absent"))              # nothing created
         self.in_log("destination directory does not exist")
         self.in_log("errors=1")
-        # ... and --dry-run says the same thing, rather than "would move".
+        # ... and --dry-run says the same thing, in the same words.
         self.dispatch("--dry-run")
-        self.in_log("DRY-RUN would FAIL")
+        self.in_log("DRY-RUN FAILURE move")
 
     # 74: an existing destination is used as-is when CREATE_DIRS is no.
     def test_74_existing_destination_works_without_create_dirs(self):
@@ -937,6 +937,20 @@ class TestE2E(E2EBase):
         r = self.run_args(["--check", self.conf])
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("CREATE_DIRS must be yes or no", r.stderr)
+
+    # 76: a dry run and a real run log the same line for the same outcome --
+    #     only the DRY-RUN prefix differs. That is what makes a dry run
+    #     readable as a prediction of the real one.
+    def test_76_dry_run_and_real_run_log_the_same_line(self):
+        self.write_conf('$category = "*" => "$OUT/" + $category')
+        self.mkpair("a", "xml", '{"category":"r"}')
+        self.dispatch("--dry-run")
+        dry = [l.split("] ", 1)[1] for l in self.log().splitlines() if "SUCCESS" in l]
+        os.remove(self.logf)
+        self.dispatch()
+        real = [l.split("] ", 1)[1] for l in self.log().splitlines() if "SUCCESS" in l]
+        self.assertEqual(len(dry), 1)
+        self.assertEqual([l[len("DRY-RUN "):] for l in dry], real)
 
 
 if __name__ == "__main__":

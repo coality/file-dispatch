@@ -223,11 +223,11 @@ def process_pair(jf, df):
     dbase = os.path.basename(df)
 
     if os.path.islink(df):
-        log("WARN", "FAILURE source='%s' reason='data file is a symlink' - skipped" % df)
+        log("WARN", "FAILURE move source='%s' reason='data file is a symlink' - skipped" % df)
         ERRORS += 1
         return
     if not os.path.isfile(df):
-        log("WARN", "FAILURE source='%s' reason='data file is not a regular file' - skipped" % df)
+        log("WARN", "FAILURE move source='%s' reason='data file is not a regular file' - skipped" % df)
         ERRORS += 1
         return
 
@@ -241,11 +241,11 @@ def process_pair(jf, df):
 
     status = result["status"]
     if status == "INVALID":
-        log("ERROR", "FAILURE source='%s' reason='invalid JSON' - left in place" % jf)
+        log("ERROR", "FAILURE move source='%s' reason='invalid JSON' - left in place" % jf)
         INVALID += 1
         return
     if status == "REQUIRED_FAIL":
-        log("ERROR", "FAILURE source='%s' reason='missing/empty required field(s): %s' - left in place"
+        log("ERROR", "FAILURE move source='%s' reason='missing/empty required field(s): %s' - left in place"
             % (jf, ", ".join(result["missing"])))
         ERRORS += 1
         return
@@ -254,12 +254,12 @@ def process_pair(jf, df):
         UNMATCHED += 1
         return
     if status == "UNSAFE":
-        log("ERROR", "FAILURE source='%s' dest='%s' reason='unsafe or empty destination' - left in place"
+        log("ERROR", "FAILURE move source='%s' dest='%s' reason='unsafe or empty destination' - left in place"
             % (df, result["dest"]))
         ERRORS += 1
         return
     if status != "OK":
-        log("ERROR", "FAILURE source='%s' reason='resolver error' - left in place" % jf)
+        log("ERROR", "FAILURE move source='%s' reason='resolver error' - left in place" % jf)
         ERRORS += 1
         return
 
@@ -268,27 +268,28 @@ def process_pair(jf, df):
     if DRY_RUN:
         problem = dest_problem(dest)
         if problem:
-            log("ERROR", "would FAIL source='%s' dest='%s' reason='%s' (rule #%s: %s) - would be left in place"
+            log("ERROR", "FAILURE move source='%s' dest='%s' reason='%s' (rule #%s: %s) - left in place"
                 % (df, dest, problem, ruleno, ruletext))
             ERRORS += 1
             return
-        wtarget = collision_safe(dest, dbase)
-        log("INFO", "would move source='%s' dest='%s' target='%s' (rule #%s: %s); would archive '%s'"
-            % (df, dest, wtarget, ruleno, ruletext, jbase))
+        log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
+            % (df, dest, collision_safe(dest, dbase), ruleno, ruletext,
+               collision_safe(JSON_ARCHIVE_DIR, jbase)))
         PROCESSED += 1
         return
 
     if not os.path.isdir(dest):
         if not CREATE_DIRS:
-            log("ERROR", "FAILURE source='%s' dest='%s' reason='destination directory does not "
-                         "exist (CREATE_DIRS is no)' - left in place" % (df, dest))
+            log("ERROR", "FAILURE move source='%s' dest='%s' reason='destination directory does not "
+                         "exist (CREATE_DIRS is no)' (rule #%s: %s) - left in place"
+                % (df, dest, ruleno, ruletext))
             ERRORS += 1
             return
         try:
             os.makedirs(dest, exist_ok=True)
         except OSError:
-            log("ERROR", "FAILURE source='%s' dest='%s' reason='cannot create destination' - left in place"
-                % (df, dest))
+            log("ERROR", "FAILURE move source='%s' dest='%s' reason='cannot create destination' "
+                         "(rule #%s: %s) - left in place" % (df, dest, ruleno, ruletext))
             ERRORS += 1
             return
 
@@ -296,7 +297,8 @@ def process_pair(jf, df):
     try:
         shutil.move(df, target)
     except (OSError, shutil.Error):
-        log("ERROR", "FAILURE source='%s' dest='%s' reason='move failed' - left in place" % (df, dest))
+        log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' (rule #%s: %s) - left in place"
+            % (df, dest, ruleno, ruletext))
         ERRORS += 1
         return
 
@@ -304,11 +306,11 @@ def process_pair(jf, df):
     try:
         shutil.move(jf, jtarget)
     except (OSError, shutil.Error):
-        log("ERROR", "FAILURE source='%s' target='%s' reason='data moved but JSON archiving failed'" % (df, target))
+        log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving failed'" % (df, target))
         ERRORS += 1
         return
 
-    log("INFO", "SUCCESS source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
+    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
         % (df, dest, target, ruleno, ruletext, jtarget))
     PROCESSED += 1
 

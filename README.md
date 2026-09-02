@@ -41,7 +41,7 @@ Both accept the same arguments:
 |--------|--------|
 | `CONFIG` (positional) | path to the config file |
 | `--config-file FILE` | path to the config file (takes priority over the positional) |
-| `--dry-run`, `-n` | log what **would** happen but move nothing; every log line is prefixed `DRY-RUN` |
+| `--dry-run`, `-n` | move nothing, but log exactly the lines a real run would write; each is prefixed `DRY-RUN` |
 | `--debug`, `-d` | verbose trace: JSON field values, resolved variables, rule resolution atom by atom |
 | `--check` | validate the config and exit (`0` = OK); moves nothing |
 | `-h`, `--help` | show usage and exit |
@@ -272,11 +272,22 @@ code changes.
 ## Logs
 
 `LOG_DIR` holds `dispatch.log` (everything) and `errors.log` (warnings/errors
-only). Each outcome is one structured line:
+only). Each outcome is one structured line, `<STATUS> <action>` followed by
+`key='value'` fields:
 
 ```
-[INFO]  SUCCESS source='…/orders-42.csv' dest='/data/out/B/orders' target='…/orders-42.csv' (rule #12: …) archived='…/orders-42.json'
-[ERROR] FAILURE source='…/bad.xml' dest='…' reason='move failed' - left in place
+[INFO]  SUCCESS move source='…/orders-42.csv' dest='/data/out/B/orders' target='…/orders-42.csv' (rule #12: …) archived='…/orders-42.json'
+[ERROR] FAILURE move source='…/bad.xml' dest='…' reason='move failed' (rule #12: …) - left in place
+[ERROR] FAILURE archive source='…/x.csv' target='…' reason='data moved but JSON archiving failed'
+```
+
+**A dry run writes the same lines**, with `DRY-RUN` inserted after the level —
+same status, same action, same fields. So a `--dry-run` log is a prediction of
+the real one, and the two can be diffed:
+
+```
+[INFO]  DRY-RUN SUCCESS move source='…' dest='…' target='…' (rule #12: …) archived='…'
+[INFO]          SUCCESS move source='…' dest='…' target='…' (rule #12: …) archived='…'
 ```
 
 Every run ends with a summary line:
