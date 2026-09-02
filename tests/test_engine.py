@@ -394,8 +394,20 @@ class TestConfigErrors(unittest.TestCase):
 
     def test_ternary_without_else_is_accepted(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
-                          'X = "a" if $k = "1"\n')
+                          'X = "a" if $k = "1"\n$k = "*" => "/o"\n')
         self.assertEqual(cfg.errors, [])
+
+    def test_unbalanced_quote_in_value_is_reported(self):
+        # The stray quote swallows the "=>", so the rule silently became an
+        # assignment and the config dispatched nothing.
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          'T = "/out"\nGO = "GO  => "$T"\n')
+        self.assertTrue(any("unbalanced quotes in value" in e for e in cfg.errors), cfg.errors)
+        self.assertTrue(any("line 5" in e for e in cfg.errors), cfg.errors)
+
+    def test_config_without_any_rule_is_reported(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\nX = "a"\n')
+        self.assertTrue(any("no rules defined" in e for e in cfg.errors), cfg.errors)
 
     def test_ternary_without_condition_still_fails(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'

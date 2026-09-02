@@ -599,6 +599,8 @@ class Config:
                 eq = split_first_eq(line)
                 if eq:
                     name, val = eq[0].strip(), eq[1].strip()
+                    if not quotes_balanced(val):
+                        self.errors.append("line %d: unbalanced quotes in value: %s" % (lineno, val))
                     if name in RESERVED:
                         self._assign_setting(name, val, lineno)
                     elif IDENT_RE.fullmatch(name):
@@ -664,6 +666,12 @@ class Config:
         st = self.settings.get("STABLE_SECONDS", "2")
         if not re.fullmatch(r"[0-9]+", st):
             self.errors.append("STABLE_SECONDS must be a non-negative integer (got '%s')" % st)
+        if not self.rules:
+            # Parses fine, dispatches nothing: every file would be logged as
+            # "no rule matched" forever. Usually a rule swallowed by a quoting
+            # slip, so say so rather than run a cron that can never do anything.
+            self.errors.append("no rules defined: nothing can ever be dispatched "
+                               "(a rule is: <condition> => \"<destination>\")")
 
     # ----------------------------------------------------------------------- #
     # Per-file resolution
