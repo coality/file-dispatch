@@ -1115,7 +1115,9 @@ class TestE2E(E2EBase):
         self.mkpair("a", "xml", '{"category":"x"}')
         self.dispatch()
         self.in_log("reason='move failed'")
-        self.in_log("cause='[Errno 13] Permission denied'")
+        # the pre-check names the problem before anything is attempted
+        self.in_log("step='check'")
+        self.in_log("cause='[Errno 13] destination directory is not writable'")
         self.exists(self.inc("a.xml"))
 
     # 89: a destination that cannot be created says why.
@@ -1182,6 +1184,51 @@ class TestE2E(E2EBase):
         self.mkpair("a", "xml", '{"category":"x"}')
         self.dispatch()
         self.assertNotIn("DIAG", self.log())
+
+    # 94: a move across filesystems copies, verifies and publishes atomically --
+    #     the content is intact and no partial file is left behind.
+    @unittest.skipUnless(os.path.isdir("/dev/shm"), "needs a second filesystem")
+    def test_94_cross_filesystem_move(self):
+        dest = tempfile.mkdtemp(prefix="fd-xfs-", dir="/dev/shm")
+        self.addCleanup(shutil.rmtree, dest, True)
+        self.write_conf('$category = "*" => "%s"' % dest)
+        payload = os.urandom(300000)
+        with open(self.inc("big.bin"), "wb") as f:
+            f.write(payload)
+        self.write_raw(self.inc("big.json"), '{"category":"x"}')
+        self.dispatch()
+        with open(os.path.join(dest, "big.bin"), "rb") as f:
+            self.assertEqual(f.read(), payload)             # byte for byte
+        self.assertEqual([f for f in os.listdir(dest) if "partial" in f], [])
+        self.absent(self.inc("big.bin"))                    # source removed last
+        self.in_log("SUCCESS move")
+
+    # 95: delivered but the source survived -- the one case that would dispatch
+    #     the same file twice, so it must be unmistakable in the log.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_95_copied_but_source_not_removed(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("a", "xml", '{"category":"x"}')
+        os.makedirs(self.op("r"))
+        os.chmod(self.incoming, 0o555)                      # can read, cannot unlink
+        self.dispatch()
+        os.chmod(self.incoming, 0o755)
+        self.exists(self.op("r", "a.xml"))                  # delivered
+        self.exists(self.inc("a.xml"))                      # and still here
+        self.in_log("will be dispatched again next run")
+        self.in_log("step='remove_source'")
+        self.in_log("errors=1")
+
+    # 96: the pre-checks refuse before touching anything, and name what is wrong.
+    def test_96_prechecks_name_the_problem(self):
+        self.write_conf('$category = "*" => "$OUT/nope"')   # CREATE_DIRS is on here
+        self.mkpair("a", "xml", '{"category":"x"}')
+        os.makedirs(self.op("nope"))
+        os.chmod(self.op("nope"), 0o555)     # tearDown restores it before cleanup
+        self.dispatch()
+        self.in_log("step='check'")
+        self.in_log("destination directory is not writable")
+        self.no_files_under(self.op("nope"))
 
 
 if __name__ == "__main__":

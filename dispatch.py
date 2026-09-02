@@ -394,6 +394,110 @@ def diagnose(src, dest_dir, exc=None):
     return " ".join(parts)
 
 
+def move_file(src, target):
+    """Move 'src' to 'target' as a series of checked, recoverable steps.
+
+    Returns (step, exc): (None, None) on success, otherwise the step that
+    failed and the exception behind it, so the caller can say what went wrong
+    rather than just that something did.
+
+    Two paths, in order of preference:
+
+      rename   one atomic call. Nothing intermediate is ever visible and no
+               data moves. Only possible within one filesystem, and some
+               network mounts refuse it even there.
+
+      staged   copy to a temporary name in the DESTINATION directory, flush it
+               to disk, check its size, then rename it into place -- a rename
+               within one directory, so the file appears complete or not at
+               all, never half-written under its final name. The source is
+               removed last: until that call, both copies exist and nothing is
+               lost if the run dies.
+
+    The staged path is also the fallback when rename is refused, which is what
+    makes a share that forbids renaming but allows create+write+delete work.
+    """
+    checks = _premove_checks(src, target)
+    if checks:
+        return checks
+
+    try:                                        # fast path: atomic, no copying
+        os.rename(src, target)
+        return (None, None)
+    except OSError as rename_exc:
+        pass                                    # fall through to the staged path
+
+    tmp = os.path.join(os.path.dirname(target),
+                       ".%s.partial-%d" % (os.path.basename(target), os.getpid()))
+    try:
+        with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())             # on disk, not just in the cache
+    except OSError as exc:
+        _discard(tmp)
+        return ("copy", exc)
+
+    try:
+        shutil.copystat(src, tmp)               # keep mtime/mode; not fatal
+    except OSError:
+        pass
+
+    try:
+        if os.path.getsize(tmp) != os.path.getsize(src):
+            _discard(tmp)
+            return ("verify", OSError("copied size differs from the source"))
+    except OSError as exc:
+        _discard(tmp)
+        return ("verify", exc)
+
+    try:
+        os.replace(tmp, target)                 # atomic within the directory
+    except OSError as exc:
+        _discard(tmp)
+        return ("publish", exc)
+
+    try:
+        os.remove(src)
+    except OSError as exc:
+        # The file IS delivered; only the source survives. Reported separately
+        # by the caller, because the next run would dispatch it a second time.
+        return ("remove_source", exc)
+    return (None, None)
+
+
+def _premove_checks(src, target):
+    """Refuse before touching anything, when we can already tell it will fail."""
+    dest_dir = os.path.dirname(target)
+    if not os.path.isfile(src):
+        return ("check", OSError("source is not a regular file"))
+    if not os.access(src, os.R_OK):
+        return ("check", PermissionError(13, "source is not readable", src))
+    if not os.path.isdir(dest_dir):
+        return ("check", OSError(2, "destination directory does not exist", dest_dir))
+    if not os.access(dest_dir, os.W_OK | os.X_OK):
+        return ("check", PermissionError(13, "destination directory is not writable", dest_dir))
+    if os.path.exists(target):
+        return ("check", OSError(17, "target already exists", target))
+    try:
+        need = os.path.getsize(src)
+        free = shutil.disk_usage(dest_dir).free
+        if free < need:
+            return ("check", OSError(28, "not enough space: needs %d bytes, %d free"
+                                     % (need, free), dest_dir))
+    except OSError:
+        pass                                    # cannot tell; let the copy decide
+    return None
+
+
+def _discard(path):
+    """Remove a partial copy; never mask the failure that led here."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _sig(path):
     try:
         st = os.stat(path)
@@ -500,11 +604,21 @@ def process_pair(jf, df):
             return
 
     target = collision_safe(dest, dbase)
-    try:
-        shutil.move(df, target)
-    except (OSError, shutil.Error) as exc:
-        log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' cause='%s' "
-                     "(rule #%s: %s) - left in place" % (df, dest, why(exc), ruleno, ruletext))
+    step, exc = move_file(df, target)
+    if step == "remove_source":
+        # Delivered, but the source is still here: the next run would dispatch
+        # it a second time. Say so plainly -- this one needs a human.
+        log("ERROR", "FAILURE move source='%s' dest='%s' target='%s' reason='copied but the source "
+                     "could not be removed, it will be dispatched again next run' step='%s' "
+                     "cause='%s' (rule #%s: %s)"
+            % (df, dest, target, step, why(exc), ruleno, ruletext))
+        log("ERROR", "DIAG move %s" % diagnose(df, dest, exc))
+        ERRORS += 1
+        return
+    if step:
+        log("ERROR", "FAILURE move source='%s' dest='%s' reason='move failed' step='%s' cause='%s' "
+                     "(rule #%s: %s) - left in place"
+            % (df, dest, step, why(exc), ruleno, ruletext))
         log("ERROR", "DIAG move %s" % diagnose(df, dest, exc))
         ERRORS += 1
         return
@@ -512,12 +626,11 @@ def process_pair(jf, df):
     jtarget = "-"
     if jf:
         jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase)
-        try:
-            shutil.move(jf, jtarget)
-        except (OSError, shutil.Error) as exc:
+        jstep, jexc = move_file(jf, jtarget)
+        if jstep:
             log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
-                         "failed' cause='%s'" % (df, target, why(exc)))
-            log("ERROR", "DIAG archive %s" % diagnose(jf, JSON_ARCHIVE_DIR, exc))
+                         "failed' step='%s' cause='%s'" % (df, target, jstep, why(jexc)))
+            log("ERROR", "DIAG archive %s" % diagnose(jf, JSON_ARCHIVE_DIR, jexc))
             ERRORS += 1
             return
 
