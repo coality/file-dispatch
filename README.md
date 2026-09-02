@@ -42,11 +42,19 @@ Both accept the same arguments:
 | `CONFIG` (positional) | path to the config file |
 | `--config-file FILE` | path to the config file (takes priority over the positional) |
 | `--dry-run`, `-n` | move nothing, but log exactly the lines a real run would write; each is prefixed `DRY-RUN` |
+| `--no-dry-run` | move files even if the config sets `DRY_RUN = yes` |
 | `--debug`, `-d` | verbose trace: JSON field values, resolved variables, rule resolution atom by atom |
+| `--no-debug` | stay quiet even if the config sets `DEBUG = yes` |
 | `--check` | validate the config and exit (`0` = OK); moves nothing |
 | `-h`, `--help` | show usage and exit |
 
 `--check`, `--dry-run`, and `--debug` can be combined (e.g. `--dry-run --debug`).
+
+`--dry-run` and `--debug` also exist as the `DRY_RUN` and `DEBUG` settings, for
+turning them on in a config rather than on every invocation. **The command line
+wins**: a flag overrides the setting, and the `--no-` twins override it the
+other way, so a config left in `DRY_RUN = yes` never silently swallows a real
+run. The config is consulted only when neither flag is given.
 
 `--dry-run` also checks each destination it resolves: that the directory exists
 and is writable, and — only when `CREATE_DIRS = yes` — that a missing one could
@@ -103,6 +111,8 @@ with a large cookbook of rule and variable examples.
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
+| `DRY_RUN` | | `no` | `yes` behaves like `--dry-run` |
+| `DEBUG` | | `no` | `yes` behaves like `--debug` |
 | `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 

@@ -520,8 +520,17 @@ def build_parser():
     )
     p.add_argument("config", nargs="?", help="path to the config file (positional)")
     p.add_argument("--config-file", dest="config_file", metavar="FILE", help="path to the config file")
-    p.add_argument("--dry-run", "-n", action="store_true", help="log what would happen, but move nothing")
-    p.add_argument("--debug", "-d", action="store_true", help="verbose trace: field values, variables, rule resolution")
+    # default=None means "not given", which is what lets the config decide.
+    # Each flag has a --no- twin so the command line can override a config that
+    # turns the option on, not only one that leaves it off.
+    p.add_argument("--dry-run", "-n", dest="dry_run", action="store_true", default=None,
+                   help="log what would happen, but move nothing (overrides DRY_RUN in the config)")
+    p.add_argument("--no-dry-run", dest="dry_run", action="store_false",
+                   help="move files even if the config sets DRY_RUN = yes")
+    p.add_argument("--debug", "-d", dest="debug", action="store_true", default=None,
+                   help="verbose trace: field values, variables, rule resolution (overrides DEBUG)")
+    p.add_argument("--no-debug", dest="debug", action="store_false",
+                   help="stay quiet even if the config sets DEBUG = yes")
     p.add_argument("--check", action="store_true", help="validate the config file and exit (0 = OK)")
     return p
 
@@ -532,8 +541,10 @@ def main(argv):
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
-    DRY_RUN = args.dry_run
-    DEBUG = args.debug
+    # Provisional: only the flags are known before the config is read. The
+    # config's own DRY_RUN / DEBUG are folded in below, once it is parsed.
+    DRY_RUN = args.dry_run is True
+    DEBUG = args.debug is True
     config_path = resolve_config_path(args)
 
     maybe_reexec(config_path)
@@ -563,9 +574,15 @@ def main(argv):
         STABLE_SECONDS = int(CFG.settings.get("STABLE_SECONDS", "2"))
     except ValueError:
         STABLE_SECONDS = 2
-    CREATE_DIRS = engine.BOOLS.get(CFG.settings.get("CREATE_DIRS", "no").strip().lower(), False)
-    DISPATCH_WITHOUT_JSON = engine.BOOLS.get(
-        CFG.settings.get("DISPATCH_WITHOUT_JSON", "no").strip().lower(), False)
+    CREATE_DIRS = engine.setting_bool(CFG.settings, "CREATE_DIRS")
+    DISPATCH_WITHOUT_JSON = engine.setting_bool(CFG.settings, "DISPATCH_WITHOUT_JSON")
+    # The command line wins: the config is consulted only where no flag was
+    # given (args.<name> is None), so --dry-run and --no-dry-run both override
+    # whatever the file says.
+    if args.dry_run is None:
+        DRY_RUN = engine.setting_bool(CFG.settings, "DRY_RUN")
+    if args.debug is None:
+        DEBUG = engine.setting_bool(CFG.settings, "DEBUG")
 
     if CFG.errors:
         if LOG_DIR:
