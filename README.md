@@ -360,6 +360,28 @@ reason='invalid JSON'               cause='Expecting property name enclosed in d
 reason='invalid JSON'               cause='top level is list, expected an object'
 ```
 
+### How a file is moved
+
+Never with a single opaque call. The move is a sequence of steps, each of which
+can fail on its own and is named in the log as `step='...'`:
+
+| Step | What it does |
+|------|--------------|
+| `check` | refuses up front when the outcome is already known: source not a readable regular file, destination missing or not writable, target name taken, not enough free space |
+| *(rename)* | one atomic call. Nothing intermediate is visible and no data moves. Only within one filesystem — and some network mounts refuse it even there, in which case the staged path below takes over |
+| `copy` | copies to a temporary name **in the destination directory**, then `fsync`s it — so a partial file never exists under the final name |
+| `verify` | the copy's size matches the source's |
+| `publish` | renames the temporary into place. A rename within one directory, so the file appears complete or not at all |
+| `remove_source` | deletes the source, last. Until this call both copies exist, so an interrupted run loses nothing |
+
+A failure at any step removes the temporary file and leaves the source
+untouched, to be retried on the next run.
+
+`remove_source` is the exception, and is reported as such: the file **has** been
+delivered and only the source survives, so the next run would dispatch it a
+second time. That line says so in as many words —
+`reason='copied but the source could not be removed, it will be dispatched again next run'`.
+
 **A failed move, or a destination that could not be created, is followed by a
 `DIAG` line** carrying everything you would otherwise go and collect by hand —
 because an errno alone does not say *permission on what, to do what*:
