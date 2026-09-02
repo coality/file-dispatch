@@ -77,8 +77,8 @@ TARGET  = $group + "/" + $category     # same thing, written with "+"
 # RIGHT side of a condition. Outside quotes it is always the operator, so write
 # "+" when you need a literal plus. The LEFT side of a condition stays a bare
 # $field (no "+", no function) -- normalize with a variable instead:
-#     ET = upper($status)
-#     $ET CONTAINS "DONE"  => $BASE + "/input_done"
+#     ST = upper($status)
+#     $ST CONTAINS "DONE"  => $BASE + "/done"
 #
 # A value can also be a Python-style ternary:  A if <condition> else B
 # The <condition> uses the same operators as rules. Ternaries chain like if/elif/else.
@@ -172,8 +172,8 @@ $note CONTAINS "URGENT"                           => "$OUT/$GROUP/urgent"
 # A JSON null reads as "" like an empty field, so these operators are the only
 # way to tell "the producer sent null" from "empty" or "absent". They take NO
 # right-hand side. REQUIRED accepts an explicit null too ("" and absent do not).
-$status ISNULL                                 => "$OUT/no_event"
-$status ISNOTNULL                              => "$OUT/event"
+$status ISNULL                                    => "$OUT/unset"
+$status ISNOTNULL                                 => "$OUT/set"
 # works in a ternary condition as well:
 # KIND = "none" if $status ISNULL else lower($status)
 

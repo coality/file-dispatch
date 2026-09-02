@@ -175,10 +175,10 @@ class TestResolve(unittest.TestCase):
     def test_required_accepts_explicit_null(self):
         cfg = self._config(self.BASE + "REQUIRED = $bu, $status\n$bu = \"*\" => \"/o\"\n")
         # null is an answer: the producer said "no value here".
-        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "status": None})["status"], "OK")
+        self.assertEqual(self._resolve(cfg, {"bu": "B", "status": None})["status"], "OK")
         # absent and "" are not.
-        self.assertEqual(self._resolve(cfg, {"bu": "alpha"})["status"], "REQUIRED_FAIL")
-        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "status": ""})["status"], "REQUIRED_FAIL")
+        self.assertEqual(self._resolve(cfg, {"bu": "B"})["status"], "REQUIRED_FAIL")
+        self.assertEqual(self._resolve(cfg, {"bu": "B", "status": ""})["status"], "REQUIRED_FAIL")
 
     def test_isnull_and_isnotnull(self):
         cfg = self._config(self.BASE
@@ -194,10 +194,10 @@ class TestResolve(unittest.TestCase):
     def test_isnull_in_ternary_and_with_and(self):
         cfg = self._config(self.BASE
                            + 'K = "none" if $e ISNULL else lower($e)\n'
-                           + '$bu = "alpha" AND $e ISNULL => "/o/" + $K\n'
+                           + '$bu = "B" AND $e ISNULL => "/o/" + $K\n'
                            + '$bu = "*" => "/o/" + $K\n')
-        self.assertEqual(self._resolve(cfg, {"bu": "alpha", "e": None})["dest"], "/o/none")
-        self.assertEqual(self._resolve(cfg, {"bu": "FR1", "e": "DONE"})["dest"], "/o/done")
+        self.assertEqual(self._resolve(cfg, {"bu": "B", "e": None})["dest"], "/o/none")
+        self.assertEqual(self._resolve(cfg, {"bu": "C", "e": "DONE"})["dest"], "/o/done")
 
     def test_first_rule_wins(self):
         cfg = self._config(self.BASE + '$c = "x" => "/first"\n$c = "x" => "/second"\n')
