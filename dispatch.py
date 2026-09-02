@@ -86,9 +86,14 @@ def log(level, msg):
     line = "%s [%s] %s" % (ts, level, msg)
     if LOG_FILE:
         _append(LOG_FILE, line)
+    # errors.log is the file you watch, so only real failures go in it: things
+    # that did not happen and need someone to look. A WARN is an observation
+    # about a run that otherwise went fine -- a file no rule claimed, a setting
+    # written twice -- and stays in dispatch.log. Both still reach stderr, so
+    # nothing becomes invisible when running by hand.
+    if level == "ERROR" and ERROR_LOG:
+        _append(ERROR_LOG, line)
     if level in ("ERROR", "WARN"):
-        if ERROR_LOG:
-            _append(ERROR_LOG, line)
         print(line, file=sys.stderr)
     elif level == "DEBUG":
         print(line, file=sys.stderr)
@@ -275,11 +280,11 @@ def process_pair(jf, df):
     dbase = os.path.basename(df)
 
     if os.path.islink(df):
-        log("WARN", "FAILURE move source='%s' reason='data file is a symlink' - skipped" % df)
+        log("ERROR", "FAILURE move source='%s' reason='data file is a symlink' - skipped" % df)
         ERRORS += 1
         return
     if not os.path.isfile(df):
-        log("WARN", "FAILURE move source='%s' reason='data file is not a regular file' - skipped" % df)
+        log("ERROR", "FAILURE move source='%s' reason='data file is not a regular file' - skipped" % df)
         ERRORS += 1
         return
 
