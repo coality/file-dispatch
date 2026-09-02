@@ -45,6 +45,29 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(engine.assemble_value('$group"/"$category', ctx), "B/report")
         self.assertEqual(engine.assemble_value("'$literal'", ctx), "$literal")
 
+    def test_plus_concatenation(self):
+        ctx = {"OUT": "/out", "group": "B", "category": "report"}
+        # "+" joins segments and absorbs the spaces around it ...
+        self.assertEqual(engine.assemble_value('$group + "/" + $category', ctx), "B/report")
+        self.assertEqual(engine.assemble_value('$group+"/"+$category', ctx), "B/report")
+        self.assertEqual(engine.assemble_value('"$OUT" + "/x"', ctx), "/out/x")
+        # ... and mixes with juxtaposition and with functions.
+        self.assertEqual(engine.assemble_value('$group"/" + $category', ctx), "B/report")
+        self.assertEqual(engine.assemble_value('upper($group) + "-" + $category', ctx), "B-report")
+        # A quoted "+" stays literal text.
+        self.assertEqual(engine.assemble_value('"a+b"', ctx), "a+b")
+        self.assertEqual(engine.assemble_value('"a" + "+" + "b"', ctx), "a+b")
+        # A dangling "+" contributes nothing rather than blowing up.
+        self.assertEqual(engine.assemble_value('+$group', ctx), "B")
+        self.assertEqual(engine.assemble_value('$group +', ctx), "B")
+
+    def test_plus_in_conditions_and_ternaries(self):
+        ctx = {"a": "xy", "x": "x", "y": "y", "k": "1"}
+        at = engine.parse_atom('$a = $x + $y')
+        self.assertTrue(engine.atom_matches(at, ctx))
+        node = engine.parse_vexpr('$x + "-ok" if $k = "1" else $x + "-ko"')
+        self.assertEqual(engine.eval_vexpr(node, ctx), "x-ok")
+
     def test_parse_atom(self):
         self.assertEqual(engine.parse_atom('$x = "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
         a = engine.parse_atom('$s IN ("a", "b")')

@@ -68,6 +68,15 @@ OUT     = "/data/out"
 GROUP   = "$group"
 REPORTS = "$OUT/Annual Reports"        # quotes -> spaces are fine; $ still expands
 TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
+TARGET  = $group + "/" + $category     # same thing, written with "+"
+#
+# "+" joins values explicitly and swallows the spaces around it. It works in
+# variables, in both branches of a ternary, in a rule destination, and on the
+# RIGHT side of a condition. Outside quotes it is always the operator, so write
+# "+" when you need a literal plus. The LEFT side of a condition stays a bare
+# $field (no "+", no function) -- normalize with a variable instead:
+#     ET = upper($status)
+#     $ET CONTAINS "DONE"  => $BASE + "/input_done"
 #
 # A value can also be a Python-style ternary:  A if <condition> else B
 # The <condition> uses the same operators as rules. Ternaries chain like if/elif/else.

@@ -812,6 +812,21 @@ class TestE2E(E2EBase):
         self.assertNotIn("would FAIL", self.log())
         self.absent(self.op("deep"))            # still creates nothing
 
+    # 68: "+" concatenation in variables, destinations and conditions.
+    def test_68_plus_concatenation(self):
+        self.write_conf('$kind = "no" + "te" => $OUT + "/" + $DEEP',
+                        extra='SUB = "a" + "/" + "b"\nDEEP = $SUB + "/" + upper($group)')
+        self.mkpair("p", "xml", '{"kind":"note","group":"zz"}')
+        self.dispatch()
+        self.exists(self.op("a", "b", "ZZ", "p.xml"))
+
+    # 69: a "+" inside quotes is literal text, not an operator.
+    def test_69_quoted_plus_is_literal(self):
+        self.write_conf('$kind = "c++" => "$OUT/" + "c++"')
+        self.mkpair("p", "xml", '{"kind":"c++"}')
+        self.dispatch()
+        self.exists(self.op("c++", "p.xml"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
