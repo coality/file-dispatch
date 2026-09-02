@@ -117,14 +117,22 @@ REQUIRED         = $category, $group     # optional: fields that must be present
 your own value with `NAME = ...` and reuse it as `$NAME`. Definitions are
 evaluated top to bottom, so a variable may reuse the ones above it. Quote
 values/paths that contain spaces or commas; a simple value can be quoted or not.
-Adjacent pieces concatenate:
+Adjacent pieces concatenate, and `+` joins them explicitly:
 
 ```ini
 OUT     = "/data/out"
 GROUP   = "$group"
 REPORTS = "$OUT/Annual Reports"        # quotes -> spaces are fine; $ still expands
 TARGET  = $group"/"$category           # concatenation -> "<group>/<category>"
+TARGET  = $group + "/" + $category     # the same, written with "+"
 ```
+
+`+` works anywhere a **value** is expected: variable definitions, both branches
+of a ternary, a rule destination, and the right-hand side of a condition. It
+absorbs the spaces around it, so `$a + "/" + $b` and `$a"/"$b` are the same
+string. Outside quotes `+` is always the operator -- write `"+"` to get a
+literal plus. The left-hand side of a condition stays a bare `$field`: no
+concatenation and no function call there.
 
 **Functions** available anywhere a value is expected (rules included):
 

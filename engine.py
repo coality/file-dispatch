@@ -195,10 +195,22 @@ def assemble_value(s, ctx):
     """Concatenate adjacent segments into a string:
       "..."   -> $refs expanded         '...'   -> literal
       func(…) -> function applied       bare    -> $refs expanded
+
+    Segments may simply sit next to each other ($a"/"$b) or be joined with an
+    explicit "+" ($a + "/" + $b), which also absorbs the spaces around it. A "+"
+    inside quotes is literal text, not an operator.
     """
     out, i, n, bare = [], 0, len(s), 0
     while i < n:
         c = s[i]
+        if c == "+":
+            if i > bare:
+                out.append(expand_refs(s[bare:i].rstrip(), ctx))
+            i += 1
+            while i < n and s[i].isspace():
+                i += 1
+            bare = i
+            continue
         if c in ('"', "'"):
             if i > bare:
                 out.append(expand_refs(s[bare:i], ctx))
