@@ -51,6 +51,9 @@ class E2EBase(unittest.TestCase):
             f.write('JSON_ARCHIVE_DIR = "%s"\n' % self.archive)
             f.write('LOG_DIR = "%s"\n' % self.logdir)
             f.write("STABLE_SECONDS = %s\n" % stable)
+            # These tests are about routing, not about directory policy, so they
+            # opt in to creation; CREATE_DIRS defaults to no (tests 73-74).
+            f.write("CREATE_DIRS = yes\n")
             f.write('OUT = "%s"\n' % self.out)
             if extra:
                 f.write(extra + "\n")
@@ -125,7 +128,7 @@ class TestE2E(E2EBase):
         self.absent(self.inc("example.xml"))
         self.absent(self.inc("example.json"))
         self.in_log("SUCCESS source=")
-        self.in_log('(rule #6: $category = "report" => "$OUT/reports")')
+        self.in_log('(rule #7: $category = "report" => "$OUT/reports")')
         self.assertEqual(r.returncode, 0)
 
     # 02
@@ -892,6 +895,48 @@ class TestE2E(E2EBase):
         self.exists(self.op("prod", "reports", "a.xml"))
         self.exists(self.op("dev", "invoices", "b.xml"))
         self.exists(self.op("dev", "misc", "c.xml"))    # no line matched -> default kept
+
+    # 73: CREATE_DIRS defaults to no -- a missing destination is an error and
+    #     the file stays put, rather than the tree being created underneath it.
+    def test_73_missing_destination_is_an_error_by_default(self):
+        with open(self.conf, "w") as f:
+            f.write('INCOMING_DIR = "%s"\n' % self.incoming)
+            f.write('JSON_ARCHIVE_DIR = "%s"\n' % self.archive)
+            f.write('LOG_DIR = "%s"\n' % self.logdir)
+            f.write("STABLE_SECONDS = 0\n")
+            f.write('OUT = "%s"\n' % self.out)
+            f.write('$category = "*" => "$OUT/$category"\n')
+        self.mkpair("a", "xml", '{"category":"absent"}')
+        self.dispatch()
+        self.exists(self.inc("a.xml"))              # left in place
+        self.absent(self.op("absent"))              # nothing created
+        self.in_log("destination directory does not exist")
+        self.in_log("errors=1")
+        # ... and --dry-run says the same thing, rather than "would move".
+        self.dispatch("--dry-run")
+        self.in_log("DRY-RUN would FAIL")
+
+    # 74: an existing destination is used as-is when CREATE_DIRS is no.
+    def test_74_existing_destination_works_without_create_dirs(self):
+        os.makedirs(self.op("here"))
+        with open(self.conf, "w") as f:
+            f.write('INCOMING_DIR = "%s"\n' % self.incoming)
+            f.write('JSON_ARCHIVE_DIR = "%s"\n' % self.archive)
+            f.write('LOG_DIR = "%s"\n' % self.logdir)
+            f.write("STABLE_SECONDS = 0\n")
+            f.write("CREATE_DIRS = no\n")
+            f.write('OUT = "%s"\n' % self.out)
+            f.write('$category = "*" => "$OUT/here"\n')
+        self.mkpair("a", "xml", '{"category":"x"}')
+        self.dispatch()
+        self.exists(self.op("here", "a.xml"))
+
+    # 75: an unusable CREATE_DIRS value is refused by --check.
+    def test_75_bad_create_dirs_value_is_refused(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="CREATE_DIRS = maybe")
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("CREATE_DIRS must be yes or no", r.stderr)
 
 
 if __name__ == "__main__":

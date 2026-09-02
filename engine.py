@@ -21,8 +21,12 @@ import re
 
 RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
-    "STABLE_SECONDS", "REQUIRED", "PYTHON",
+    "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
 }
+
+# Accepted spellings for the yes/no settings, and what they mean.
+BOOLS = {"yes": True, "no": False, "true": True, "false": False, "1": True, "0": False,
+         "on": True, "off": False}
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -666,6 +670,9 @@ class Config:
         st = self.settings.get("STABLE_SECONDS", "2")
         if not re.fullmatch(r"[0-9]+", st):
             self.errors.append("STABLE_SECONDS must be a non-negative integer (got '%s')" % st)
+        cd = self.settings.get("CREATE_DIRS", "no")
+        if cd.strip().lower() not in BOOLS:
+            self.errors.append("CREATE_DIRS must be yes or no (got '%s')" % cd)
         if not self.rules:
             # Parses fine, dispatches nothing: every file would be logged as
             # "no rule matched" forever. Usually a rule swallowed by a quoting

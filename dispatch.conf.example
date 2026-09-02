@@ -45,6 +45,17 @@ LOG_DIR          = "/data/logs"
 # are still being copied. Default: 2.
 STABLE_SECONDS   = 2
 
+# (optional) Create a destination directory when it does not exist?
+#   no  (default) a missing destination is an ERROR: the file is left in place
+#                 and the run says so. Safe: a typo in a rule, or a field that
+#                 came through empty, fails loudly instead of quietly building
+#                 a new tree somewhere.
+#   yes           missing destinations are created (makedirs).
+# --dry-run follows this setting, so it reports what a real run would do.
+# LOG_DIR and JSON_ARCHIVE_DIR are the tool's own directories, not routing
+# targets, and are created either way.
+CREATE_DIRS      = no
+
 # (optional) Path to the Python 3 interpreter used by the engine.
 # Leave it out to use "python3" from PATH (or the $DISPATCH_PYTHON env var).
 # PYTHON         = "/usr/bin/python3"

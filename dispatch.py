@@ -30,6 +30,7 @@ INCOMING_DIR = ""
 JSON_ARCHIVE_DIR = ""
 LOG_DIR = ""
 STABLE_SECONDS = 2
+CREATE_DIRS = False
 LOG_FILE = ""
 ERROR_LOG = ""
 
@@ -104,6 +105,8 @@ def _dest_problem(path):
         return None
     if os.path.exists(path):
         return "destination exists but is not a directory"
+    if not CREATE_DIRS:
+        return "destination directory does not exist (CREATE_DIRS is no)"
     # Not there yet: a real run would create it. Walk up to the closest
     # existing ancestor and check the missing levels could be created there.
     parent = os.path.dirname(os.path.abspath(path))
@@ -275,12 +278,19 @@ def process_pair(jf, df):
         PROCESSED += 1
         return
 
-    try:
-        os.makedirs(dest, exist_ok=True)
-    except OSError:
-        log("ERROR", "FAILURE source='%s' dest='%s' reason='cannot create destination' - left in place" % (df, dest))
-        ERRORS += 1
-        return
+    if not os.path.isdir(dest):
+        if not CREATE_DIRS:
+            log("ERROR", "FAILURE source='%s' dest='%s' reason='destination directory does not "
+                         "exist (CREATE_DIRS is no)' - left in place" % (df, dest))
+            ERRORS += 1
+            return
+        try:
+            os.makedirs(dest, exist_ok=True)
+        except OSError:
+            log("ERROR", "FAILURE source='%s' dest='%s' reason='cannot create destination' - left in place"
+                % (df, dest))
+            ERRORS += 1
+            return
 
     target = collision_safe(dest, dbase)
     try:
@@ -423,7 +433,7 @@ def build_parser():
 
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
-    global DRY_RUN, DEBUG, CFG, ERRORS
+    global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -458,6 +468,7 @@ def main(argv):
         STABLE_SECONDS = int(CFG.settings.get("STABLE_SECONDS", "2"))
     except ValueError:
         STABLE_SECONDS = 2
+    CREATE_DIRS = engine.BOOLS.get(CFG.settings.get("CREATE_DIRS", "no").strip().lower(), False)
 
     if CFG.errors:
         if LOG_DIR:
