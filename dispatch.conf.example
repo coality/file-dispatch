@@ -12,8 +12,9 @@
 #
 #  How to run:
 #    ./dispatch.sh --check     validate this config, then exit (0 = OK)
-#    ./dispatch.sh --dry-run   log what WOULD happen but move NOTHING;
-#                              every log line is prefixed with "DRY-RUN".
+#    ./dispatch.sh --dry-run   move NOTHING, but log exactly the lines a real
+#                              run would write (same STATUS, same action, same
+#                              fields), each prefixed with "DRY-RUN".
 #                              Destinations are checked too (does the directory
 #                              exist / could it be created / is it writable?),
 #                              so a target cron could not write to shows up as
