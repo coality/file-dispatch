@@ -827,6 +827,38 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.exists(self.op("c++", "p.xml"))
 
+    # 70: a file still held open for writing is not moved, even when its size
+    #     and mtime have stopped changing (the case the stability gate misses).
+    def test_70_open_for_write_is_left_alone(self):
+        self.write_conf('$category = "report" => "$OUT/r"')
+        self.mkpair("busy", "xml", '{"category":"report"}')
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import time; f = open(%r, 'ab'); time.sleep(30)" % self.inc("busy.xml")])
+        try:
+            deadline = time.time() + 10        # let the holder get the fd open
+            while time.time() < deadline and not self._holds_fd(holder.pid, self.inc("busy.xml")):
+                time.sleep(0.05)
+            self.dispatch()
+        finally:
+            holder.kill()
+            holder.wait()
+        self.exists(self.inc("busy.xml"))      # left in place
+        self.no_files_under(self.out)
+        self.in_log("open for writing")
+        self.in_log("unstable=1")
+        # ... and it goes through on the next run, once the writer is gone.
+        self.dispatch()
+        self.exists(self.op("r", "busy.xml"))
+
+    def _holds_fd(self, pid, path):
+        fddir = "/proc/%d/fd" % pid
+        try:
+            return any(os.readlink("%s/%s" % (fddir, fd)) == os.path.realpath(path)
+                       for fd in os.listdir(fddir))
+        except OSError:
+            return False
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

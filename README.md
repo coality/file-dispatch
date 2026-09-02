@@ -12,8 +12,9 @@ ever deleted.
 ## Requirements
 
 `/bin/sh` and **Python 3.9 or newer** (standard library only — nothing to
-install). Tested on CPython 3.9 through 3.12. `lsof` is used if present, but is
-optional.
+install). Tested on CPython 3.9 through 3.12. To spot a file still held open by
+its producer, Linux uses `/proc` directly; elsewhere `lsof` is used if present,
+but is optional.
 
 ## Quick start
 
