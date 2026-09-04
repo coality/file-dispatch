@@ -1439,6 +1439,57 @@ class TestE2E(E2EBase):
         with open(os.path.join(rep, "report.csv"), newline="") as fh:
             return list(csv.DictReader(fh))
 
+    # 106: DATA_ARCHIVE_DIR keeps a copy of what was delivered, and the three
+    #      copies of one delivery share a name.
+    def test_106_data_archive_keeps_a_copy(self):
+        darch = os.path.join(self.sb, "darch")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='DATA_ARCHIVE_DIR = "%s"' % darch)
+        self.mkpair("a", "csv", '{"category":"x"}', data="PAYLOAD")
+        self.dispatch()
+        self.exists(self.op("r", "a.csv"))                       # delivered
+        with open(os.path.join(darch, "a.csv")) as fh:
+            self.assertEqual(fh.read(), "PAYLOAD")               # and archived
+        self.exists(os.path.join(self.archive, "a.json"))
+        self.in_log("data_archived='%s'" % os.path.join(darch, "a.csv"))
+
+    def test_106b_the_three_copies_share_one_collision_suffix(self):
+        darch = os.path.join(self.sb, "darch")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='DATA_ARCHIVE_DIR = "%s"' % darch)
+        for _ in range(2):                                       # same name twice
+            self.mkpair("lot", "csv", '{"category":"x"}')
+            self.dispatch()
+        suffixed = [f for f in os.listdir(self.op("r")) if f != "lot.csv"]
+        self.assertEqual(len(suffixed), 1, suffixed)
+        stamp = suffixed[0][len("lot.csv."):]
+        self.exists(os.path.join(darch, "lot.csv." + stamp))
+        self.exists(os.path.join(self.archive, "lot.json." + stamp))
+
+    # 107: archiving is secondary -- a failure there is reported, but what was
+    #      delivered stays delivered and is not sent again.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_107_failed_data_archive_does_not_undo_the_delivery(self):
+        darch = os.path.join(self.sb, "darch")
+        os.makedirs(darch)
+        os.chmod(darch, 0o555)
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='DATA_ARCHIVE_DIR = "%s"' % darch)
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.exists(self.op("r", "a.csv"))                       # delivered anyway
+        self.absent(self.inc("a.csv"))                           # not retried
+        self.assertIn("archiving a copy failed", self.errlog())
+        self.in_log("errors=1")
+
+    # 108: without the setting, nothing changes -- data only at its destination.
+    def test_108_data_archive_is_opt_in(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.exists(self.op("r", "a.csv"))
+        self.assertNotIn("data_archived", self.log())
+
 
 class TestLogRotation(unittest.TestCase):
     """The rotation itself, driven directly: the cap is in whole megabytes, so

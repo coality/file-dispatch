@@ -48,6 +48,7 @@ MIN_PYTHON = (3, 9)
 # Runtime state (filled from the config / CLI)
 INCOMING_DIR = ""
 JSON_ARCHIVE_DIR = ""
+DATA_ARCHIVE_DIR = ""                   # "" keeps the data only at its destination
 LOG_DIR = ""
 STABLE_SECONDS = 2
 CREATE_DIRS = False
@@ -196,16 +197,21 @@ def _dest_problem(path):
         parent = up
 
 
-def collision_safe(directory, name):
+def collision_safe(directory, name, suffix=None):
     """A path under 'directory' for 'name' that does not overwrite anything.
 
     Two files with the same name arriving on different days is normal, so a
     collision suffixes the timestamp (and then the pid, if a run is fast enough
     to collide within one second) instead of replacing what is already there.
+
+    'suffix' lets one pair share a single suffix across the destination, the
+    data archive and the JSON archive. Computing it independently per file
+    would work almost always and then, once in a while, straddle a second and
+    leave the three copies of one delivery under two different names.
     """
     path = os.path.join(directory, name)
     if os.path.exists(path):
-        ts = time.strftime("%Y%m%d-%H%M%S")
+        ts = suffix or time.strftime("%Y%m%d-%H%M%S")
         path = os.path.join(directory, "%s.%s" % (name, ts))
         if os.path.exists(path):
             path = os.path.join(directory, "%s.%s.%d" % (name, ts, os.getpid()))
@@ -511,6 +517,41 @@ def move_file(src, target):
         # The file IS delivered; only the source survives. Reported separately
         # by the caller, because the next run would dispatch it a second time.
         return ("remove_source", exc)
+    return (None, None)
+
+
+def copy_file(src, target):
+    """Copy 'src' to 'target' through the same staged path as a move.
+
+    Same guarantees, minus the last step: the copy is written under a temporary
+    name and renamed into place, so 'target' is never a partial file, and the
+    source is left alone.
+    """
+    checks = _premove_checks(src, target)
+    if checks:
+        return checks
+    tmp = os.path.join(os.path.dirname(target),
+                       ".%s.partial-%d" % (os.path.basename(target), os.getpid()))
+    try:
+        with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+    except OSError as exc:
+        _discard(tmp)
+        return ("copy", exc)
+    try:
+        shutil.copystat(src, tmp)
+    except OSError:
+        pass
+    try:
+        if os.path.getsize(tmp) != os.path.getsize(src):
+            _discard(tmp)
+            return ("verify", OSError("copied size differs from the source"))
+        os.replace(tmp, target)
+    except OSError as exc:
+        _discard(tmp)
+        return ("publish", exc)
     return (None, None)
 
 
@@ -916,7 +957,8 @@ def process_pair(jf, df):
             ERRORS += 1
             return
 
-    target = collision_safe(dest, dbase)
+    suffix = time.strftime("%Y%m%d-%H%M%S")     # shared by all three copies
+    target = collision_safe(dest, dbase, suffix)
     step, exc = move_file(df, target)
     if step == "remove_source":
         # Delivered, but the source is still here: the next run would dispatch
@@ -938,9 +980,24 @@ def process_pair(jf, df):
         ERRORS += 1
         return
 
+    # Keep a copy of what was delivered, if asked to. Done AFTER the move, and
+    # from the delivered file, so the archive holds exactly what arrived at the
+    # destination -- and so a delivery is never held up by the archive.
+    darchived = "-"
+    if DATA_ARCHIVE_DIR:
+        darchived = collision_safe(DATA_ARCHIVE_DIR, dbase, suffix)
+        astep, aexc = copy_file(target, darchived)
+        if astep:
+            log("ERROR", "FAILURE archive source='%s' target='%s' reason='the data file was "
+                         "delivered but archiving a copy failed' step='%s' cause='%s'"
+                % (target, darchived, astep, why(aexc)))
+            log("ERROR", "DIAG archive %s" % diagnose(target, DATA_ARCHIVE_DIR, aexc))
+            darchived = "-"
+            ERRORS += 1                     # reported, but the delivery stands
+
     jtarget = "-"
     if jf:
-        jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase)
+        jtarget = collision_safe(JSON_ARCHIVE_DIR, jbase, suffix)
         jstep, jexc = move_file(jf, jtarget)
         if jstep:
             log("ERROR", "FAILURE archive source='%s' target='%s' reason='data moved but JSON archiving "
@@ -950,8 +1007,9 @@ def process_pair(jf, df):
             ERRORS += 1
             return
 
-    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
-        % (df, dest, target, ruleno, ruletext, jtarget))
+    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s"
+        % (df, dest, target, ruleno, ruletext, jtarget,
+           " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else ""))
     report_note(df, "success", dest, file_date=fdate)
     PROCESSED += 1
 
@@ -1117,7 +1175,8 @@ def build_parser():
 
 
 def main(argv):
-    global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
+    global INCOMING_DIR, JSON_ARCHIVE_DIR, DATA_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS
+    global LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
     global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT
 
@@ -1148,6 +1207,7 @@ def main(argv):
 
     INCOMING_DIR = CFG.settings.get("INCOMING_DIR", "")
     JSON_ARCHIVE_DIR = CFG.settings.get("JSON_ARCHIVE_DIR", "")
+    DATA_ARCHIVE_DIR = CFG.settings.get("DATA_ARCHIVE_DIR", "")
     LOG_DIR = CFG.settings.get("LOG_DIR", "")
     if LOG_DIR:
         LOG_FILE = os.path.join(LOG_DIR, "dispatch.log")
@@ -1212,6 +1272,8 @@ def main(argv):
     else:
         try:
             os.makedirs(JSON_ARCHIVE_DIR, exist_ok=True)
+            if DATA_ARCHIVE_DIR:
+                os.makedirs(DATA_ARCHIVE_DIR, exist_ok=True)
         except OSError:
             pass
         # One run at a time. A batch that takes longer than the cron interval
