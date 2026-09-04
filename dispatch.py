@@ -58,6 +58,7 @@ LOG_MAX_BYTES = 10 * 1024 * 1024        # 0 disables rotation
 LOG_KEEP = 5
 REPORT_DIR = ""                         # "" disables the report entirely
 REPORT_KEEP_DAYS = 90
+REPORT_SPLIT = "none"                   # none | daily | monthly
 
 DRY_RUN = False
 DEBUG = False
@@ -597,6 +598,25 @@ def report_path():
     return os.path.join(REPORT_DIR, "report.csv") if REPORT_DIR else ""
 
 
+def _period(row):
+    """Which published file a row belongs to, from its first_seen.
+
+    Partitioning, not snapshotting: a row lives in exactly one file, so the
+    whole set read together is the report -- no duplicates to reconcile, which
+    is what makes a Power BI folder import work with no extra step.
+    """
+    if REPORT_SPLIT == "monthly":
+        return (row.get("first_seen") or "")[:7]        # YYYY-MM
+    if REPORT_SPLIT == "daily":
+        return (row.get("first_seen") or "")[:10]       # YYYY-MM-DD
+    return ""
+
+
+def _published_path(period):
+    name = "report-%s.csv" % period if period else "report.csv"
+    return os.path.join(REPORT_DIR, name)
+
+
 def report_state_path():
     """Our own copy, and the authority.
 
@@ -689,10 +709,45 @@ def report_save():
 
     if not _write_csv(report_state_path(), rows):
         return                              # nothing to publish from
-    if not _write_csv(report_path(), rows):
-        log("WARN", "report.csv could not be updated (a program is holding it open?) - "
-                    "the state is safe in '%s' and it will be published on the next run"
-            % report_state_path())
+
+    # Group the rows into the files they belong to. With REPORT_SPLIT = none
+    # that is the single report.csv, as before.
+    by_period = {}
+    for row in rows:
+        by_period.setdefault(_period(row), []).append(row)
+
+    touched = {_period(_report[k]) for k in _report_seen if k in _report}
+    for period, part in sorted(by_period.items()):
+        # Only rewrite a file this run actually changed. Past periods sit
+        # untouched, so a spreadsheet open on last month's file never collides
+        # with this month's writes -- and a period only reopens when one of
+        # its rows moves on, such as an old failure that finally succeeds.
+        if period and period not in touched and os.path.exists(_published_path(period)):
+            continue
+        if not _write_csv(_published_path(period), part):
+            log("WARN", "%s could not be updated (a program is holding it open?) - the state "
+                        "is safe in '%s' and it will be published on the next run"
+                % (os.path.basename(_published_path(period)), report_state_path()))
+
+    # A period emptied by retention leaves a file behind; drop it.
+    if REPORT_SPLIT != "none":
+        _prune_published(set(by_period))
+
+
+def _prune_published(keep):
+    try:
+        names = os.listdir(REPORT_DIR)
+    except OSError:
+        return
+    for name in names:
+        if not (name.startswith("report-") and name.endswith(".csv")):
+            continue
+        if name[len("report-"):-len(".csv")] in keep:
+            continue
+        try:
+            os.remove(os.path.join(REPORT_DIR, name))
+        except OSError:
+            pass
 
 
 def _write_csv(path, rows):
@@ -1034,7 +1089,7 @@ def build_parser():
 def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS, LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
-    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS
+    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -1077,6 +1132,9 @@ def main(argv):
     except ValueError:                      # validate() reports it; keep the defaults
         pass
     REPORT_DIR = CFG.settings.get("REPORT_DIR", "")
+    REPORT_SPLIT = CFG.settings.get("REPORT_SPLIT", "none").strip().lower()
+    if REPORT_SPLIT not in engine.REPORT_SPLITS:
+        REPORT_SPLIT = "none"               # validate() reports it
     try:
         REPORT_KEEP_DAYS = int(CFG.settings.get("REPORT_KEEP_DAYS", "90"))
     except ValueError:

@@ -46,8 +46,10 @@ RESERVED = {
     "INCOMING_DIR", "JSON_ARCHIVE_DIR", "LOG_DIR",
     "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
     "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
-    "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS",
+    "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS", "REPORT_SPLIT",
 }
+
+REPORT_SPLITS = ("none", "daily", "monthly")
 
 # The yes/no settings, all validated the same way and all overridable from the
 # command line for the two that have a flag (DRY_RUN, DEBUG).
@@ -763,6 +765,10 @@ class Config:
             val = self.settings.get(name)
             if val is not None and not re.fullmatch(r"[0-9]+", val.strip()):
                 self.errors.append("%s must be %s (got '%s')" % (name, what, val))
+        sp = self.settings.get("REPORT_SPLIT", "none").strip().lower()
+        if sp not in REPORT_SPLITS:
+            self.errors.append("REPORT_SPLIT must be one of %s (got '%s')"
+                               % (", ".join(REPORT_SPLITS), self.settings.get("REPORT_SPLIT")))
         for name in BOOL_SETTINGS:
             val = self.settings.get(name, "no")
             if val.strip().lower() not in BOOLS:

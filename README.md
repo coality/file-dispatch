@@ -117,6 +117,7 @@ with a large cookbook of rule and variable examples.
 | `LOG_KEEP` | | `5` | how many rolled-over generations to keep (`0` truncates instead) |
 | `REPORT_DIR` | | — | write `report.csv` here: one row per file, updated across runs. Unset = no report |
 | `REPORT_KEEP_DAYS` | | `90` | drop rows for files no longer around after this many days (`0` keeps everything) |
+| `REPORT_SPLIT` | | `none` | `daily` / `monthly` publish one file per period instead of a single `report.csv` |
 | `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -401,6 +402,35 @@ itself.
 filtering `*.csv` walks straight past it. Both files are written atomically, so
 a reader never catches one half-written. Upgrading from a version that only had
 `report.csv` carries its history over on the first run.
+
+### One file per period
+
+`REPORT_SPLIT = monthly` (or `daily`) publishes `report-2026-09.csv`,
+`report-2026-08.csv`, … instead of one `report.csv`:
+
+```
+REPORT_DIR/
+  report.state          the authority, as always
+  report-2026-07.csv    closed: never rewritten again
+  report-2026-08.csv    closed
+  report-2026-09.csv    the only one this month's runs touch
+```
+
+This **partitions**, it does not snapshot: a row lives in exactly one file,
+chosen by its `first_seen`, so reading the whole folder gives the report with
+no duplicates to reconcile — which is precisely the shape Power BI's folder
+connector expects, with no dedup step to write.
+
+The practical gain is that a past period is never rewritten, so a spreadsheet
+left open on last month's file cannot collide with this month's writes. A
+closed file reopens only when one of its own rows moves on — a file first seen
+in August that finally succeeds in September updates the August row where it
+lives.
+
+Size follows: at a thousand files a month, a monthly part is about a hundred
+kilobytes and there are twelve a year. `daily` suits a much higher volume;
+`none` stays right when a single file is easier to hand around. A period whose
+rows have all aged past `REPORT_KEEP_DAYS` has its file removed.
 
 ## Logs
 

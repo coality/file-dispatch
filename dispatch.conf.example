@@ -51,6 +51,16 @@ JSON_ARCHIVE_DIR = "/data/archive/json"
 # nothing, and report.csv is republished on the next run with a WARN meanwhile.
 # REPORT_DIR       = "/data/report"
 # REPORT_KEEP_DAYS = 90            # drop rows for files long gone; 0 keeps all
+#
+# REPORT_SPLIT publishes one file per period instead of a single report.csv:
+#   none (default)  report.csv
+#   monthly         report-2026-09.csv, report-2026-08.csv, ...
+#   daily           report-2026-09-04.csv, ...
+# It PARTITIONS: a row lives in exactly one file (by its first_seen), so
+# reading the whole folder gives the report with no duplicates -- the shape a
+# Power BI folder import expects. A past period is never rewritten, so a
+# spreadsheet left open on last month cannot collide with this month's writes.
+# REPORT_SPLIT     = monthly
 
 # (optional) Log rotation, so a cron job cannot fill the disk.
 #   LOG_MAX_MB  roll a log over once the next line would take it past this
