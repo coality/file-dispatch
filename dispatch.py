@@ -593,16 +593,35 @@ def _file_date(path):
 
 
 def report_path():
+    """The published copy: what Excel and Power BI open."""
     return os.path.join(REPORT_DIR, "report.csv") if REPORT_DIR else ""
 
 
+def report_state_path():
+    """Our own copy, and the authority.
+
+    Kept apart from report.csv because a spreadsheet left open on a network
+    share holds an SMB deny-write lock, and the rename that publishes the
+    report is then refused -- so publishing is a thing that is allowed to fail.
+    The state is what must not. No .csv extension, so a Power BI folder import
+    filtering *.csv walks past it and nobody opens it by accident.
+    """
+    return os.path.join(REPORT_DIR, "report.state") if REPORT_DIR else ""
+
+
 def report_load():
-    """Read the existing report, keyed by (filename, first_seen)."""
+    """Read the state, keyed by (filename, first_seen).
+
+    Falls back to the published report.csv when there is no state yet, so an
+    existing report carries over the first time this runs.
+    """
     global _report
     _report = {}
-    path = report_path()
-    if not path:
+    if not REPORT_DIR:
         return
+    path = report_state_path()
+    if not os.path.exists(path):
+        path = report_path()
     try:
         with open(path, "r", encoding="utf-8", newline="") as fh:
             for row in csv.DictReader(fh):
@@ -649,9 +668,15 @@ def report_note(path, status, destination="", reason="", file_date=None):
 
 
 def report_save():
-    """Write the report out atomically, dropping rows past their retention."""
-    path = report_path()
-    if _report is None or not path:
+    """Write the state, then publish report.csv from it.
+
+    Two steps on purpose. The state must be written -- losing it loses the
+    retry counts and the first_seen of everything in flight -- while publishing
+    is best effort: a spreadsheet holding report.csv open on a share makes the
+    rename fail, and that must not cost us the run's bookkeeping. The published
+    copy simply stays as it was and is rewritten on the next run.
+    """
+    if _report is None or not REPORT_DIR:
         return
     try:
         os.makedirs(REPORT_DIR, exist_ok=True)
@@ -661,16 +686,30 @@ def report_save():
 
     rows = [r for k, r in _report.items() if k in _report_seen or _report_keep(r)]
     rows.sort(key=lambda r: (r.get("first_seen", ""), r.get("filename", "")))
+
+    if not _write_csv(report_state_path(), rows):
+        return                              # nothing to publish from
+    if not _write_csv(report_path(), rows):
+        log("WARN", "report.csv could not be updated (a program is holding it open?) - "
+                    "the state is safe in '%s' and it will be published on the next run"
+            % report_state_path())
+
+
+def _write_csv(path, rows):
+    """Write rows to 'path' atomically. Returns False and logs on failure."""
     tmp = path + ".partial-%d" % os.getpid()
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(REPORT_COLUMNS))
             writer.writeheader()
             writer.writerows(rows)
-        os.replace(tmp, path)               # readers never see a half-written report
+        os.replace(tmp, path)               # readers never see a half-written file
+        return True
     except (OSError, csv.Error) as exc:
         _discard(tmp)
-        log("ERROR", "cannot write report '%s' cause='%s'" % (path, why(exc)))
+        if path == report_state_path():     # this one is not allowed to fail quietly
+            log("ERROR", "cannot write report state '%s' cause='%s'" % (path, why(exc)))
+        return False
 
 
 def _report_keep(row):

@@ -367,8 +367,40 @@ back later — periodic exports reuse names constantly — opens a new row inste
 of being added to the finished one. A success closes a row for good.
 
 `--dry-run` never writes the report. Rows for files that are no longer around
-are dropped after `REPORT_KEEP_DAYS`; the file is rewritten atomically each
-run, so a reader never sees it half-written.
+are dropped after `REPORT_KEEP_DAYS`.
+
+### Opening the report while it is in use
+
+`REPORT_DIR` holds two files:
+
+| File | Role |
+|------|------|
+| `report.state` | the authority. Written first, every run. Nothing else reads it |
+| `report.csv` | a copy of it, published for you, Excel and Power BI |
+
+They are separate because of what a spreadsheet does to a file on a network
+share: Excel holds it open with an SMB deny-write lock for the whole editing
+session, and the rename that publishes a new version is then refused. On Linux
+alone this never happens — replacing a file someone is reading works, and the
+reader keeps seeing the version it opened — but over SMB it does.
+
+So publishing is allowed to fail. The state is written first and always, the
+run's bookkeeping is never lost, `report.csv` simply stays as it was, and a
+`WARN` says so:
+
+```
+[WARN] report.csv could not be updated (a program is holding it open?) - the state
+       is safe in '…/report.state' and it will be published on the next run
+```
+
+The next run republishes it, complete. Nothing needs doing beyond closing the
+file. It stays a warning rather than an error precisely because it heals
+itself.
+
+`report.state` has no `.csv` extension on purpose: a Power BI folder import
+filtering `*.csv` walks straight past it. Both files are written atomically, so
+a reader never catches one half-written. Upgrading from a version that only had
+`report.csv` carries its history over on the first run.
 
 ## Logs
 

@@ -44,6 +44,11 @@ JSON_ARCHIVE_DIR = "/data/archive/json"
 # stuck file stays one line. A row is keyed by filename AND first_seen, so a
 # name that comes back later opens a new row rather than reopening the old one.
 # Leave REPORT_DIR out for no report at all. --dry-run never writes it.
+# Two files are written there: report.state (the authority, no .csv extension
+# so a Power BI folder import skips it) and report.csv (the published copy).
+# They are separate because Excel holds a file open on a share with a deny-write
+# lock, which blocks publishing: the state is still written, the run loses
+# nothing, and report.csv is republished on the next run with a WARN meanwhile.
 # REPORT_DIR       = "/data/report"
 # REPORT_KEEP_DAYS = 90            # drop rows for files long gone; 0 keeps all
 

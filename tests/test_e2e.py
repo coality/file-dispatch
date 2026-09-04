@@ -1298,6 +1298,45 @@ class TestE2E(E2EBase):
         self.dispatch("--dry-run")
         self.assertFalse(os.path.exists(os.path.join(rep, "report.csv")))
 
+    # 101: a locked report.csv costs nothing -- the state keeps the run's work
+    #      and the published copy catches up once the lock is gone.
+    def test_101_locked_report_csv_loses_nothing(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("one", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.assertEqual(len(self.read_report(rep)), 1)
+
+        # Stand in for a spreadsheet holding the file: os.replace onto this
+        # path cannot work, while every other write in the directory still can.
+        os.remove(os.path.join(rep, "report.csv"))
+        os.mkdir(os.path.join(rep, "report.csv"))
+        self.mkpair("two", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.in_log("report.csv could not be updated")
+        self.assertIn("[WARN]", self.log())
+        self.assertNotIn("could not be updated", self.errlog())   # transient, self-healing
+        with open(os.path.join(rep, "report.state"), newline="") as fh:
+            self.assertEqual(len(list(csv.DictReader(fh))), 2)    # kept anyway
+
+        os.rmdir(os.path.join(rep, "report.csv"))                 # lock released
+        self.mkpair("three", "csv", '{"category":"x"}')
+        self.dispatch()
+        names = [r["filename"] for r in self.read_report(rep)]
+        self.assertEqual(sorted(names), ["one.csv", "three.csv", "two.csv"])
+
+    # 102: an existing report.csv is adopted when there is no state yet.
+    def test_102_existing_report_is_adopted(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("old", "csv", '{"category":"x"}')
+        self.dispatch()
+        os.remove(os.path.join(rep, "report.state"))              # as if upgrading
+        self.mkpair("new", "csv", '{"category":"x"}')
+        self.dispatch()
+        names = [r["filename"] for r in self.read_report(rep)]
+        self.assertEqual(sorted(names), ["new.csv", "old.csv"])   # history carried over
+
     def read_report(self, rep):
         with open(os.path.join(rep, "report.csv"), newline="") as fh:
             return list(csv.DictReader(fh))
