@@ -1345,6 +1345,8 @@ class TestE2E(E2EBase):
                         extra='REPORT_DIR = "%s"\nREPORT_SPLIT = monthly' % rep)
         self.mkpair("old", "csv", '{"category":"x"}')
         self.dispatch()
+        os.remove(self.op("r", "old.csv"))      # taken downstream: its row closes
+        self.dispatch()
         self.backdate(rep, "old.csv", "2026-07-15T09:00:00.000")
 
         self.mkpair("new", "csv", '{"category":"x"}')
@@ -1383,9 +1385,11 @@ class TestE2E(E2EBase):
         self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
         self.mkpair("a", "csv", '{"category":"x"}')
         self.dispatch()
+        os.remove(self.op("r", "a.csv"))                     # the downstream takes it
+        self.dispatch()                                      # closes the row
         before = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
         for _ in range(3):
-            self.dispatch()                                  # incoming is empty now
+            self.dispatch()                                  # nothing left to watch
         after = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
         self.assertEqual(before, after)
         # ... and a new file still wakes it up
@@ -1415,7 +1419,11 @@ class TestE2E(E2EBase):
         names = [r["filename"] for r in self.read_report(rep)]
         self.assertEqual(sorted(names), ["one.csv", "two.csv"])
 
-        # ...and the idle shortcut still holds once it is back in step.
+        # ...and the idle shortcut still holds once it is back in step and the
+        # downstream has taken the deliveries, so nothing is left to watch.
+        for name in ("one.csv", "two.csv"):
+            os.remove(self.op("r", name))
+        self.dispatch()
         before = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
         for _ in range(3):
             self.dispatch()
@@ -1457,8 +1465,9 @@ class TestE2E(E2EBase):
         state = os.path.join(rep, "report.state")
         with open(state, newline="") as fh:
             rows = list(csv.DictReader(fh))
-        older = [c for c in rows[0]
-                 if c not in ("data_archive", "json_archive")]    # as an older version wrote it
+        new_columns = ("data_archive", "json_archive", "target",
+                       "still_present", "last_check", "transit_seconds")
+        older = [c for c in rows[0] if c not in new_columns]      # as an older version wrote it
         with open(state, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=older, extrasaction="ignore")
             w.writeheader()
@@ -1467,8 +1476,86 @@ class TestE2E(E2EBase):
         self.dispatch()
         rows = {r["filename"]: r for r in self.read_report(rep)}
         self.assertEqual(sorted(rows), ["new.csv", "old.csv"])   # history kept
-        self.assertEqual(rows["old.csv"]["data_archive"], "")    # simply empty
-        self.assertEqual(rows["old.csv"]["json_archive"], "")
+        for column in new_columns:
+            self.assertEqual(rows["old.csv"][column], "", column)  # simply empty
+
+    # 111: a delivered file is watched until the downstream takes it, and
+    #      last_check moves while it waits.
+    def test_111_target_is_watched_while_it_waits(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["target"], self.op("r", "a.csv"))   # the delivered path
+        self.assertEqual(row["still_present"], "yes")
+        self.assertEqual(row["transit_seconds"], "")             # not gone yet
+        first = row["last_check"]
+        self.assertTrue(first)
+
+        time.sleep(1.1)
+        self.dispatch()                                          # still sitting there
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["still_present"], "yes")
+        self.assertGreater(row["last_check"], first)             # the heartbeat moved
+
+    # 112: the run that finds it gone freezes last_check and times the wait.
+    def test_112_consumption_is_dated_and_timed(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        moved_at = self.read_report(rep)[0]["moved_at"]
+
+        time.sleep(2.1)
+        os.remove(self.op("r", "a.csv"))                         # taken downstream
+        self.dispatch()
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["still_present"], "no")
+        self.assertGreater(row["last_check"], moved_at)          # dated on the sighting
+        self.assertGreaterEqual(int(row["transit_seconds"]), 2)
+        self.assertLess(int(row["transit_seconds"]), 60)
+        frozen = row["last_check"]
+
+        # 113: once gone, never looked at again -- not even if the name returns.
+        time.sleep(1.1)
+        self.write_raw(self.op("r", "a.csv"), "a different file, same name")
+        self.dispatch()
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["still_present"], "no")             # not resurrected
+        self.assertEqual(row["last_check"], frozen)              # and not moved
+
+    # 114: with a collision, the row follows the file that was actually written.
+    def test_114_watch_follows_the_collision_suffixed_file(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        for _ in range(2):
+            self.mkpair("lot", "csv", '{"category":"x"}')
+            self.dispatch()
+            time.sleep(1.1)
+        rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["target"], self.op("r", "lot.csv"))
+        self.assertTrue(rows[1]["target"].startswith(self.op("r", "lot.csv.")), rows[1])
+
+        os.remove(rows[1]["target"])                             # only the second one
+        self.dispatch()
+        rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
+        self.assertEqual(rows[0]["still_present"], "yes")        # untouched
+        self.assertEqual(rows[1]["still_present"], "no")         # the right one closed
+
+    # 115: a file that was never delivered has nothing to watch.
+    def test_115_undelivered_rows_are_not_watched(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "ok" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("nope", "csv", '{"category":"other"}')       # no rule matches
+        self.dispatch()
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["status"], "unmatched")
+        self.assertEqual(row["target"], "")
+        self.assertEqual(row["still_present"], "")
+        self.assertEqual(row["last_check"], "")
+        self.assertEqual(row["transit_seconds"], "")
 
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
