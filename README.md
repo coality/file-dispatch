@@ -396,6 +396,10 @@ stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,chec
 | `reason` | why it is not `success` — the same wording as the log |
 | `data_archive` | where the archived copy of the data went, when `DATA_ARCHIVE_DIR` is set. Empty when nothing was archived |
 | `json_archive` | where the sidecar was archived. Empty for a file dispatched without one |
+| `target` | the path actually delivered, collision suffix included |
+| `still_present` | `yes` / `no` — is the delivered file still sitting in the destination? Empty if it was never delivered |
+| `last_check` | when the file was last looked for (see below) |
+| `transit_seconds` | how long it waited in the destination before the downstream took it |
 
 **A failure is never repeated**: the row is updated and `retries` grows, so one
 stuck file is one line however long it stays stuck. When it finally goes
@@ -412,6 +416,40 @@ are dropped after `REPORT_KEEP_DAYS`.
 New columns are appended rather than inserted, so a report written by an older
 version still loads — the column it lacks simply reads back empty — and a
 consumer reading by position keeps working.
+
+### Following what the downstream does
+
+A destination directory is usually a letterbox rather than a resting place:
+another system comes along and takes the files. Each run looks at the deliveries
+still waiting there, which is enough to answer *was this picked up, and how long
+did it sit?* without instrumenting that system at all.
+
+| While the file is | `still_present` | `last_check` |
+|-------------------|-----------------|--------------|
+| still there | `yes` | **moves every run** — reads as "still there as of" |
+| gone | `no` | **frozen** on the run that found it gone — the date it was observed consumed |
+
+`transit_seconds` is filled at that same moment: `last_check` minus `moved_at`,
+the time the file spent waiting. Once a row reads `no` it is never looked at
+again — the file is gone, and a later file of the same name is a different file
+with its own row:
+
+```csv
+filename,…,moved_at,…,target,still_present,last_check,transit_seconds
+a.csv,…,2026-09-04T16:33:40,…,/data/out/r/a.csv,yes,2026-09-04T16:33:42,
+a.csv,…,2026-09-04T16:33:40,…,/data/out/r/a.csv,no,2026-09-04T16:33:45,5
+```
+
+The watch follows `target`, the path actually written — with its collision
+suffix, which is why the column exists: `destination` + `filename` would point
+at the wrong file as soon as two files share a name.
+
+Two things worth knowing. `transit_seconds` is an **upper bound**: the file left
+at some point between the previous check and the one that noticed, so the
+resolution is your cron interval. And a delivery that is still waiting keeps its
+report row changing, so runs are only truly idle once the downstream has taken
+everything — with `REPORT_SPLIT`, a period's file stops being rewritten once all
+of its files have been taken, rather than as soon as the period ends.
 
 ### Opening the report while it is in use
 

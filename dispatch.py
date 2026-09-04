@@ -615,7 +615,8 @@ def _sig(path):
 # consuming the CSV by position keeps working.
 REPORT_COLUMNS = ("filename", "first_seen", "file_date", "destination",
                   "moved_at", "status", "retries", "reason", "data_archive",
-                  "json_archive")
+                  "json_archive", "target", "still_present", "last_check",
+                  "transit_seconds")
 
 _report = None          # {(filename, first_seen): row}; None until loaded
 _report_seen = set()    # keys touched this run, so retention can spare them
@@ -698,7 +699,8 @@ def report_load():
 
 
 def report_note(path, status, destination="", reason="", file_date=None,
-                data_archive=None, json_archive=None):
+                data_archive=None, json_archive=None, target=None,
+                still_present=None, last_check=None):
     """Record where 'path' stands. Called once per file per run.
 
     Reuses the file's open row if it has one -- counting a retry -- and opens a
@@ -732,9 +734,61 @@ def report_note(path, status, destination="", reason="", file_date=None,
         row["data_archive"] = data_archive
     if json_archive is not None:
         row["json_archive"] = json_archive
+    if target is not None:
+        row["target"] = target
+    if still_present is not None:
+        row["still_present"] = still_present
+    if last_check is not None:
+        row["last_check"] = last_check
     if status == "success":
         row["moved_at"] = _now()
     return key
+
+
+def report_check_targets():
+    """Follow what the downstream system does with what we delivered.
+
+    A destination directory is a letterbox, not a resting place: another system
+    comes and takes the files. We cannot see it work, but we can see the file
+    leave, and that is enough to answer the question asked after the fact --
+    was this picked up, and how long did it sit there?
+
+    So each run looks at the deliveries still waiting. While the file is there,
+    last_check keeps moving: it reads as "still there as of". The run that
+    finds it gone freezes last_check on that instant, which turns it into the
+    date the file was observed consumed, and records how long it had been
+    waiting. Nothing looks at that row again -- the file is gone, there is
+    nothing further to learn, and last_check must not drift afterwards.
+
+    Rows written before this existed carry no target and are left alone.
+    """
+    if _report is None or not REPORT_DIR:
+        return
+    now = _now()
+    for key, row in _report.items():
+        if row.get("status") != "success" or row.get("still_present") != "yes":
+            continue
+        target = row.get("target")
+        if not target:
+            continue
+        row["last_check"] = now
+        if not os.path.exists(target):
+            row["still_present"] = "no"
+            row["transit_seconds"] = _elapsed(row.get("moved_at"), now)
+        _report_seen.add(key)       # changed: spare it from retention, and write it
+
+
+def _elapsed(since, until):
+    """Whole seconds between two report timestamps, or "" if either is unusable.
+
+    An upper bound by nature: the file left at some point between the previous
+    check and this one, and the cron interval is the resolution.
+    """
+    try:
+        delta = datetime.fromisoformat(until) - datetime.fromisoformat(since or "")
+    except (ValueError, TypeError):
+        return ""
+    return str(max(0, int(delta.total_seconds())))
 
 
 def report_save():
@@ -1021,7 +1075,8 @@ def process_pair(jf, df):
            " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else ""))
     report_note(df, "success", dest, file_date=fdate,
                 data_archive="" if darchived == "-" else darchived,
-                json_archive="" if jtarget == "-" else jtarget)
+                json_archive="" if jtarget == "-" else jtarget,
+                target=target, still_present="yes", last_check=_now())
     PROCESSED += 1
 
 
@@ -1311,6 +1366,7 @@ def main(argv):
         report_load()
     rc = process_all()
     if not DRY_RUN:
+        report_check_targets()
         report_save()
 
     log("INFO", "run summary: processed=%d unmatched=%d invalid=%d incomplete=%d unstable=%d errors=%d"
