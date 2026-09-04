@@ -614,7 +614,8 @@ def _sig(path):
 # has the column missing, which reads back as empty, and anything already
 # consuming the CSV by position keeps working.
 REPORT_COLUMNS = ("filename", "first_seen", "file_date", "destination",
-                  "moved_at", "status", "retries", "reason", "data_archive")
+                  "moved_at", "status", "retries", "reason", "data_archive",
+                  "json_archive")
 
 _report = None          # {(filename, first_seen): row}; None until loaded
 _report_seen = set()    # keys touched this run, so retention can spare them
@@ -697,7 +698,7 @@ def report_load():
 
 
 def report_note(path, status, destination="", reason="", file_date=None,
-                data_archive=None):
+                data_archive=None, json_archive=None):
     """Record where 'path' stands. Called once per file per run.
 
     Reuses the file's open row if it has one -- counting a retry -- and opens a
@@ -729,6 +730,8 @@ def report_note(path, status, destination="", reason="", file_date=None,
     row["reason"] = reason
     if data_archive is not None:
         row["data_archive"] = data_archive
+    if json_archive is not None:
+        row["json_archive"] = json_archive
     if status == "success":
         row["moved_at"] = _now()
     return key
@@ -1017,7 +1020,8 @@ def process_pair(jf, df):
         % (df, dest, target, ruleno, ruletext, jtarget,
            " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else ""))
     report_note(df, "success", dest, file_date=fdate,
-                data_archive="" if darchived == "-" else darchived)
+                data_archive="" if darchived == "-" else darchived,
+                json_archive="" if jtarget == "-" else jtarget)
     PROCESSED += 1
 
 
