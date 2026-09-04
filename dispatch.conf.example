@@ -75,6 +75,12 @@ JSON_ARCHIVE_DIR = "/data/archive/json"
 # Power BI folder import expects. A past period is never rewritten, so a
 # spreadsheet left open on last month cannot collide with this month's writes.
 # REPORT_SPLIT     = monthly
+#
+# REPORT_DELIMITER sets the field separator of the PUBLISHED copy. Power BI and
+# Excel in a French locale often expect ";". report.state always stays
+# comma-separated so it can be read back whatever this says. Same setting, same
+# meaning, in file-deploy.
+# REPORT_DELIMITER = ";"
 
 # (optional) Log rotation, so a cron job cannot fill the disk.
 #   LOG_MAX_MB  roll a log over once the next line would take it past this

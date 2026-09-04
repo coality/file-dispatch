@@ -47,6 +47,7 @@ RESERVED = {
     "STABLE_SECONDS", "REQUIRED", "PYTHON", "CREATE_DIRS",
     "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
     "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS", "REPORT_SPLIT",
+    "REPORT_DELIMITER",
     "DATA_ARCHIVE_DIR",
 }
 
@@ -766,6 +767,11 @@ class Config:
             val = self.settings.get(name)
             if val is not None and not re.fullmatch(r"[0-9]+", val.strip()):
                 self.errors.append("%s must be %s (got '%s')" % (name, what, val))
+        delim = self.settings.get("REPORT_DELIMITER", ",")
+        if delim is not None and len(str(delim)) != 1:
+            self.errors.append("REPORT_DELIMITER must be a single character (got '%s')"
+                               % delim)
+
         sp = self.settings.get("REPORT_SPLIT", "none").strip().lower()
         if sp not in REPORT_SPLITS:
             self.errors.append("REPORT_SPLIT must be one of %s (got '%s')"

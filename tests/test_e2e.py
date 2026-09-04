@@ -1557,6 +1557,29 @@ class TestE2E(E2EBase):
         self.assertEqual(row["last_check"], "")
         self.assertEqual(row["transit_seconds"], "")
 
+    # 107: REPORT_DELIMITER changes the published copy only. The state keeps
+    # commas so it can always be read back, whatever the published file uses.
+    def test_107_report_delimiter_applies_to_the_published_copy(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='REPORT_DIR = "%s"\nREPORT_DELIMITER = ";"' % rep)
+        self.mkpair("one", "csv", '{"category":"x"}')
+        self.dispatch()
+        with open(os.path.join(rep, "report.csv"), encoding="utf-8") as fh:
+            self.assertTrue(fh.readline().startswith("filename;first_seen;"))
+        with open(os.path.join(rep, "report.state"), encoding="utf-8") as fh:
+            self.assertTrue(fh.readline().startswith("filename,first_seen,"))
+
+    # 108: a delimiter that is not one character is refused, not guessed.
+    def test_108_bad_report_delimiter_is_refused(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='REPORT_DIR = "%s"\nREPORT_DELIMITER = "||"' % rep)
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("REPORT_DELIMITER must be a single character",
+                      r.stdout + r.stderr)
+
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
         path = os.path.join(rep, "report.state")

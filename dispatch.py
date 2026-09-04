@@ -59,6 +59,7 @@ LOG_MAX_BYTES = 10 * 1024 * 1024        # 0 disables rotation
 LOG_KEEP = 5
 REPORT_DIR = ""                         # "" disables the report entirely
 REPORT_KEEP_DAYS = 90
+REPORT_DELIMITER = ","                  # ";" for a French-locale Excel/Power BI
 REPORT_SPLIT = "none"                   # none | daily | monthly
 
 DRY_RUN = False
@@ -885,11 +886,17 @@ def _publish_lagging(rows):
 
 
 def _write_csv(path, rows):
-    """Write rows to 'path' atomically. Returns False and logs on failure."""
+    """Write rows to 'path' atomically. Returns False and logs on failure.
+
+    The published copy honours REPORT_DELIMITER; the state always stays
+    comma-separated, so it can be read back whatever the published file uses.
+    """
+    delim = "," if path == report_state_path() else REPORT_DELIMITER
     tmp = path + ".partial-%d" % os.getpid()
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(REPORT_COLUMNS))
+            writer = csv.DictWriter(fh, fieldnames=list(REPORT_COLUMNS),
+                                    delimiter=delim)
             writer.writeheader()
             writer.writerows(rows)
         os.replace(tmp, path)               # readers never see a half-written file
@@ -1244,7 +1251,7 @@ def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, DATA_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS
     global LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
-    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT
+    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT, REPORT_DELIMITER
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -1295,6 +1302,7 @@ def main(argv):
         REPORT_KEEP_DAYS = int(CFG.settings.get("REPORT_KEEP_DAYS", "90"))
     except ValueError:
         pass
+    REPORT_DELIMITER = str(CFG.settings.get("REPORT_DELIMITER", ","))[:1] or ","
     CREATE_DIRS = engine.setting_bool(CFG.settings, "CREATE_DIRS")
     DISPATCH_WITHOUT_JSON = engine.setting_bool(CFG.settings, "DISPATCH_WITHOUT_JSON")
     # The command line wins: the config is consulted only where no flag was
