@@ -107,6 +107,7 @@ with a large cookbook of rule and variable examples.
 |---------|:---:|:---:|---------|
 | `INCOMING_DIR` | ✅ | — | directory to watch for `<base>` + `<base>.json` pairs |
 | `JSON_ARCHIVE_DIR` | ✅ | — | where each processed `.json` is archived (flat directory) |
+| `DATA_ARCHIVE_DIR` | | — | also keep a **copy** of each delivered data file here. Unset = the data lives only at its destination |
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
@@ -178,6 +179,42 @@ past the gap between the two writes.
 
 Note that `$field = "*"` matches an **absent or empty** field too, so it is not
 a test for "the sidecar provided this". Use `$field != ""` for that.
+
+### Archiving the data as well
+
+By default the sidecar is archived and the data file is only moved to its
+destination — the archive holds metadata, the destination holds payload.
+`DATA_ARCHIVE_DIR` also keeps a copy of the data:
+
+```ini
+JSON_ARCHIVE_DIR = "/data/archive/json"
+DATA_ARCHIVE_DIR = "/data/archive/data"
+```
+
+The copy is taken **after** the move and **from the delivered file**, so the
+archive holds exactly what reached the destination, and a slow or failing
+archive never holds up a delivery. If archiving fails, the delivery stands and
+is not retried — the file is where it belongs — and the failure is logged with
+its `DIAG` line and counted in `errors=`.
+
+The three copies of one delivery share a name. When a name collides, the same
+timestamp suffix is applied to all three, so they stay matched:
+
+```
+/data/out/B/orders/lot.csv.20260904-160320
+/data/archive/data/lot.csv.20260904-160320
+/data/archive/json/lot.json.20260904-160320
+```
+
+The success line names both archives:
+
+```
+SUCCESS move source='…' dest='…' target='…' (rule #7: …)
+        archived='…/lot.json' data_archived='…/lot.csv'
+```
+
+Bear in mind this doubles what the data costs on disk, and that nothing prunes
+the archives — plan their retention outside the tool.
 
 ### Creating destinations
 
