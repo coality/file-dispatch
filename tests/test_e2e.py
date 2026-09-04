@@ -1337,6 +1337,57 @@ class TestE2E(E2EBase):
         names = [r["filename"] for r in self.read_report(rep)]
         self.assertEqual(sorted(names), ["new.csv", "old.csv"])   # history carried over
 
+    # 103: REPORT_SPLIT partitions rows into one file per period, and leaves a
+    #      past period alone -- so a spreadsheet open on it never collides.
+    def test_103_report_split_partitions_and_leaves_the_past_alone(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='REPORT_DIR = "%s"\nREPORT_SPLIT = monthly' % rep)
+        self.mkpair("old", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.backdate(rep, "old.csv", "2026-07-15T09:00:00.000")
+
+        self.mkpair("new", "csv", '{"category":"x"}')
+        self.dispatch()
+        published = sorted(f for f in os.listdir(rep) if f.endswith(".csv"))
+        self.assertEqual(len(published), 2, published)
+        self.assertTrue(any(f.endswith("-2026-07.csv") for f in published), published)
+        # each row lives in exactly ONE file: no duplicates to reconcile
+        rows = []
+        for f in published:
+            with open(os.path.join(rep, f), newline="") as fh:
+                rows += list(csv.DictReader(fh))
+        self.assertEqual(sorted(r["filename"] for r in rows), ["new.csv", "old.csv"])
+
+        # July is untouchable from now on; a run must not even try
+        july = os.path.join(rep, [f for f in published if "2026-07" in f][0])
+        os.remove(july)
+        os.mkdir(july)
+        self.mkpair("third", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.assertNotIn("could not be updated", self.log())
+        self.assertTrue(os.path.isdir(july))            # never written to
+
+    # 104: an unusable REPORT_SPLIT is refused by --check.
+    def test_104_bad_report_split_is_refused(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="REPORT_SPLIT = weekly")
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("REPORT_SPLIT must be one of", r.stderr)
+
+    def backdate(self, rep, filename, when):
+        """Rewrite one row's first_seen, to stand in for an earlier period."""
+        path = os.path.join(rep, "report.state")
+        with open(path, newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        for row in rows:
+            if row["filename"] == filename:
+                row["first_seen"] = when
+        with open(path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+
     def read_report(self, rep):
         with open(os.path.join(rep, "report.csv"), newline="") as fh:
             return list(csv.DictReader(fh))
