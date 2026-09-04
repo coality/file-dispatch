@@ -1375,6 +1375,24 @@ class TestE2E(E2EBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("REPORT_SPLIT must be one of", r.stderr)
 
+    # 105: a run with nothing to do rewrites nothing -- on a network share the
+    #      report is real traffic, and a quiet cron runs far more often than
+    #      files arrive.
+    def test_105_idle_run_touches_no_report_file(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("a", "csv", '{"category":"x"}')
+        self.dispatch()
+        before = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
+        for _ in range(3):
+            self.dispatch()                                  # incoming is empty now
+        after = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
+        self.assertEqual(before, after)
+        # ... and a new file still wakes it up
+        self.mkpair("b", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.assertEqual(len(self.read_report(rep)), 2)
+
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
         path = os.path.join(rep, "report.state")

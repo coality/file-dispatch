@@ -707,6 +707,13 @@ def report_save():
     rows = [r for k, r in _report.items() if k in _report_seen or _report_keep(r)]
     rows.sort(key=lambda r: (r.get("first_seen", ""), r.get("filename", "")))
 
+    if not _report_seen and len(rows) == len(_report):
+        # Nothing was observed and nothing aged out: every file on disk already
+        # says exactly this. A quiet cron would otherwise rewrite the whole
+        # report every minute, which on a network share is real traffic for no
+        # change at all.
+        return
+
     if not _write_csv(report_state_path(), rows):
         return                              # nothing to publish from
 
