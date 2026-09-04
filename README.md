@@ -377,11 +377,11 @@ updated in place run after run. The logs say what happened during one run; this
 answers the question asked afterwards — *what became of `orders-42.csv`?*
 
 ```csv
-filename,first_seen,file_date,destination,moved_at,status,retries,reason
-good.csv,2026-09-02T17:33:41.812,2026-09-02T17:33:41,/data/out/ok,2026-09-02T17:33:42,success,0,
-late.csv,2026-09-02T17:30:02.119,2026-09-02T17:30:01,/data/out/wait,2026-09-02T17:33:42,success,2,
-odd.csv,2026-09-02T17:30:02.140,2026-09-02T17:30:01,,,unmatched,3,no rule matched
-stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,check: [Errno 13] destination directory is not writable
+filename,first_seen,file_date,destination,moved_at,status,retries,reason,data_archive
+good.csv,2026-09-02T17:33:41.812,2026-09-02T17:33:41,/data/out/ok,2026-09-02T17:33:42,success,0,,/data/archive/data/good.csv
+late.csv,2026-09-02T17:30:02.119,2026-09-02T17:30:01,/data/out/wait,2026-09-02T17:33:42,success,2,,/data/archive/data/late.csv
+odd.csv,2026-09-02T17:30:02.140,2026-09-02T17:30:01,,,unmatched,3,no rule matched,
+stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,check: [Errno 13] destination directory is not writable,
 ```
 
 | Column | Meaning |
@@ -394,6 +394,7 @@ stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,chec
 | `status` | `success`, `failed`, `unmatched` (no rule claimed it), `pending` (waiting for its sidecar, or still being written) |
 | `retries` | how many further runs have tried since the first attempt |
 | `reason` | why it is not `success` — the same wording as the log |
+| `data_archive` | where the archived copy of the data went, when `DATA_ARCHIVE_DIR` is set. Empty when nothing was archived |
 
 **A failure is never repeated**: the row is updated and `retries` grows, so one
 stuck file is one line however long it stays stuck. When it finally goes
@@ -406,6 +407,10 @@ of being added to the finished one. A success closes a row for good.
 
 `--dry-run` never writes the report. Rows for files that are no longer around
 are dropped after `REPORT_KEEP_DAYS`.
+
+New columns are appended rather than inserted, so a report written by an older
+version still loads — the column it lacks simply reads back empty — and a
+consumer reading by position keeps working.
 
 ### Opening the report while it is in use
 

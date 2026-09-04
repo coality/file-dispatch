@@ -1422,6 +1422,39 @@ class TestE2E(E2EBase):
         after = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
         self.assertEqual(before, after, "a quiet run must not rewrite anything")
 
+    # 109: the report names where the archived copy of the data went.
+    def test_109_report_carries_the_data_archive_path(self):
+        rep = os.path.join(self.sb, "report")
+        darch = os.path.join(self.sb, "darch")
+        self.write_conf('$category = "ok" => "$OUT/r"',
+                        extra='REPORT_DIR = "%s"\nDATA_ARCHIVE_DIR = "%s"' % (rep, darch))
+        self.mkpair("kept", "csv", '{"category":"ok"}')
+        self.mkpair("nope", "csv", '{"category":"other"}')       # never delivered
+        self.dispatch()
+        rows = {r["filename"]: r for r in self.read_report(rep)}
+        self.assertEqual(rows["kept.csv"]["data_archive"], os.path.join(darch, "kept.csv"))
+        self.assertEqual(rows["nope.csv"]["data_archive"], "")   # nothing archived
+
+    # 110: a report written before the column existed still loads.
+    def test_110_report_without_the_column_still_loads(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("old", "csv", '{"category":"x"}')
+        self.dispatch()
+        state = os.path.join(rep, "report.state")
+        with open(state, newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        older = [c for c in rows[0] if c != "data_archive"]      # as an older version wrote it
+        with open(state, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=older, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+        self.mkpair("new", "csv", '{"category":"x"}')
+        self.dispatch()
+        rows = {r["filename"]: r for r in self.read_report(rep)}
+        self.assertEqual(sorted(rows), ["new.csv", "old.csv"])   # history kept
+        self.assertEqual(rows["old.csv"]["data_archive"], "")    # simply empty
+
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
         path = os.path.join(rep, "report.state")

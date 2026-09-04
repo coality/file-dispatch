@@ -610,8 +610,11 @@ def _sig(path):
 # While a file keeps failing, its row is updated in place and 'retries' counts
 # the runs that tried again, so one stuck file is one line, not one per run.
 # --------------------------------------------------------------------------- #
+# Appended rather than inserted: a report written by an older version simply
+# has the column missing, which reads back as empty, and anything already
+# consuming the CSV by position keeps working.
 REPORT_COLUMNS = ("filename", "first_seen", "file_date", "destination",
-                  "moved_at", "status", "retries", "reason")
+                  "moved_at", "status", "retries", "reason", "data_archive")
 
 _report = None          # {(filename, first_seen): row}; None until loaded
 _report_seen = set()    # keys touched this run, so retention can spare them
@@ -693,7 +696,8 @@ def report_load():
         _report = {}        # unreadable or corrupt: start over rather than lose the run
 
 
-def report_note(path, status, destination="", reason="", file_date=None):
+def report_note(path, status, destination="", reason="", file_date=None,
+                data_archive=None):
     """Record where 'path' stands. Called once per file per run.
 
     Reuses the file's open row if it has one -- counting a retry -- and opens a
@@ -723,6 +727,8 @@ def report_note(path, status, destination="", reason="", file_date=None):
     if destination:
         row["destination"] = destination
     row["reason"] = reason
+    if data_archive is not None:
+        row["data_archive"] = data_archive
     if status == "success":
         row["moved_at"] = _now()
     return key
@@ -1010,7 +1016,8 @@ def process_pair(jf, df):
     log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s"
         % (df, dest, target, ruleno, ruletext, jtarget,
            " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else ""))
-    report_note(df, "success", dest, file_date=fdate)
+    report_note(df, "success", dest, file_date=fdate,
+                data_archive="" if darchived == "-" else darchived)
     PROCESSED += 1
 
 
