@@ -1393,6 +1393,35 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.assertEqual(len(self.read_report(rep)), 2)
 
+    # 106: a publish that failed is republished on the next run, even a quiet
+    # one. Without this the report stays stale until a new file happens to
+    # arrive, which on a quiet weekend is days.
+    def test_106_stale_report_is_republished_on_a_quiet_run(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("one", "csv", '{"category":"x"}')
+        self.dispatch()
+
+        # A spreadsheet holding the file: the publish fails, the state does not.
+        os.remove(os.path.join(rep, "report.csv"))
+        os.mkdir(os.path.join(rep, "report.csv"))
+        self.mkpair("two", "csv", '{"category":"x"}')
+        self.dispatch()
+        self.in_log("report.csv could not be updated")
+
+        # Lock released, and nothing new to process: it must heal by itself.
+        os.rmdir(os.path.join(rep, "report.csv"))
+        self.dispatch()
+        names = [r["filename"] for r in self.read_report(rep)]
+        self.assertEqual(sorted(names), ["one.csv", "two.csv"])
+
+        # ...and the idle shortcut still holds once it is back in step.
+        before = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
+        for _ in range(3):
+            self.dispatch()
+        after = {f: os.stat(os.path.join(rep, f)).st_mtime_ns for f in os.listdir(rep)}
+        self.assertEqual(before, after, "a quiet run must not rewrite anything")
+
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
         path = os.path.join(rep, "report.state")

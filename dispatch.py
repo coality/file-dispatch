@@ -707,11 +707,11 @@ def report_save():
     rows = [r for k, r in _report.items() if k in _report_seen or _report_keep(r)]
     rows.sort(key=lambda r: (r.get("first_seen", ""), r.get("filename", "")))
 
-    if not _report_seen and len(rows) == len(_report):
-        # Nothing was observed and nothing aged out: every file on disk already
-        # says exactly this. A quiet cron would otherwise rewrite the whole
-        # report every minute, which on a network share is real traffic for no
-        # change at all.
+    if not _report_seen and len(rows) == len(_report) and not _publish_lagging(rows):
+        # Nothing was observed, nothing aged out, and every published file is
+        # already in step with the state. A quiet cron would otherwise rewrite
+        # the whole report every minute, which on a network share is real
+        # traffic for no change at all.
         return
 
     if not _write_csv(report_state_path(), rows):
@@ -755,6 +755,29 @@ def _prune_published(keep):
             os.remove(os.path.join(REPORT_DIR, name))
         except OSError:
             pass
+
+
+def _publish_lagging(rows):
+    """True when a published file is missing, or older than the state.
+
+    The quiet-run shortcut in report_save() assumes the files on disk already
+    say what the state says. That is false after a publish that FAILED -- a
+    spreadsheet holding report.csv open being the usual reason -- and without
+    this check the report would stay stale until the next file happened to
+    arrive. On a quiet weekend that is days, and it is the one case where the
+    two-file design would otherwise not heal itself.
+    """
+    try:
+        state_mtime = os.path.getmtime(report_state_path())
+    except OSError:
+        return True                          # no state yet: publish
+    for period in {_period(r) for r in rows}:
+        try:
+            if os.path.getmtime(_published_path(period)) < state_mtime:
+                return True                  # published before the last state write
+        except OSError:
+            return True                      # missing entirely
+    return False
 
 
 def _write_csv(path, rows):
