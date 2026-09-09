@@ -76,6 +76,16 @@ JSON_ARCHIVE_DIR = "/data/archive/json"
 # spreadsheet left open on last month cannot collide with this month's writes.
 # REPORT_SPLIT     = monthly
 #
+# REPORT_HASH publishes a digest of each dispatched file in the report:
+#   none (default)  no digest, and no extra reading
+#   sha256 / md5    same digests as sha256sum / md5sum, so a partner's own
+#                   published checksum can be compared directly
+# Read before the move (afterwards the source is gone), recorded on success.
+# json_hash is empty for a file dispatched without a sidecar.
+# OFF BY DEFAULT because it costs a full read of every dispatched file -- a
+# same-filesystem move otherwise never touches the contents at all.
+# REPORT_HASH      = sha256
+#
 # REPORT_DELIMITER sets the field separator of the PUBLISHED copy. Power BI and
 # Excel in a French locale often expect ";". report.state always stays
 # comma-separated so it can be read back whatever this says. Same setting, same

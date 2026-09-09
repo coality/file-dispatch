@@ -48,8 +48,12 @@ RESERVED = {
     "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
     "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS", "REPORT_SPLIT",
     "REPORT_DELIMITER",
-    "DATA_ARCHIVE_DIR",
+    "DATA_ARCHIVE_DIR", "REPORT_HASH",
 }
+
+# Algorithms the report can publish. "none" costs nothing; the others read
+# every dispatched file end to end, which is the whole cost of the feature.
+REPORT_HASHES = ("none", "sha256", "md5")
 
 REPORT_SPLITS = ("none", "daily", "monthly")
 
@@ -772,6 +776,10 @@ class Config:
             self.errors.append("REPORT_DELIMITER must be a single character (got '%s')"
                                % delim)
 
+        rh = self.settings.get("REPORT_HASH", "none").strip().lower()
+        if rh not in REPORT_HASHES:
+            self.errors.append("REPORT_HASH must be one of %s (got '%s')"
+                               % (", ".join(REPORT_HASHES), self.settings.get("REPORT_HASH")))
         sp = self.settings.get("REPORT_SPLIT", "none").strip().lower()
         if sp not in REPORT_SPLITS:
             self.errors.append("REPORT_SPLIT must be one of %s (got '%s')"

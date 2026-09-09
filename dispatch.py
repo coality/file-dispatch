@@ -32,6 +32,7 @@ import argparse
 import csv
 import fcntl
 import grp
+import hashlib
 import os
 import pwd
 import shutil
@@ -61,6 +62,7 @@ REPORT_DIR = ""                         # "" disables the report entirely
 REPORT_KEEP_DAYS = 90
 REPORT_DELIMITER = ","                  # ";" for a French-locale Excel/Power BI
 REPORT_SPLIT = "none"                   # none | daily | monthly
+REPORT_HASH = "none"                    # none | sha256 | md5
 
 DRY_RUN = False
 DEBUG = False
@@ -617,7 +619,7 @@ def _sig(path):
 REPORT_COLUMNS = ("filename", "first_seen", "file_date", "destination",
                   "moved_at", "status", "retries", "reason", "data_archive",
                   "json_archive", "target", "still_present", "last_check",
-                  "transit_seconds")
+                  "transit_seconds", "data_hash", "json_hash")
 
 _report = None          # {(filename, first_seen): row}; None until loaded
 _report_seen = set()    # keys touched this run, so retention can spare them
@@ -631,6 +633,26 @@ def _now(precise=False):
     if precise:
         return now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
     return now.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def file_hash(path):
+    """Hex digest of 'path' under REPORT_HASH, or "" when off or unreadable.
+
+    Read in chunks: a digest of a file we are about to move should not depend
+    on being able to hold it in memory. Costs one full read of every dispatched
+    file, which is why it is off by default -- a same-filesystem move otherwise
+    never touches the contents at all.
+    """
+    if REPORT_HASH == "none" or not path:
+        return ""
+    try:
+        digest = hashlib.new(REPORT_HASH)
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except (OSError, ValueError):
+        return ""                       # unreadable: the move will say why
 
 
 def _file_date(path):
@@ -701,7 +723,8 @@ def report_load():
 
 def report_note(path, status, destination="", reason="", file_date=None,
                 data_archive=None, json_archive=None, target=None,
-                still_present=None, last_check=None):
+                still_present=None, last_check=None, data_hash=None,
+                json_hash=None):
     """Record where 'path' stands. Called once per file per run.
 
     Reuses the file's open row if it has one -- counting a retry -- and opens a
@@ -741,6 +764,10 @@ def report_note(path, status, destination="", reason="", file_date=None,
         row["still_present"] = still_present
     if last_check is not None:
         row["last_check"] = last_check
+    if data_hash is not None:
+        row["data_hash"] = data_hash
+    if json_hash is not None:
+        row["json_hash"] = json_hash
     if status == "success":
         row["moved_at"] = _now()
     return key
@@ -1027,6 +1054,9 @@ def process_pair(jf, df):
             ERRORS += 1
             return
 
+    # Read the digests now: after the move the source is gone, and the delivered
+    # copy may already have been taken by the downstream system.
+    dhash, jhash = file_hash(df), file_hash(jf)
     suffix = time.strftime("%Y%m%d-%H%M%S")     # shared by all three copies
     target = collision_safe(dest, dbase, suffix)
     step, exc = move_file(df, target)
@@ -1083,7 +1113,8 @@ def process_pair(jf, df):
     report_note(df, "success", dest, file_date=fdate,
                 data_archive="" if darchived == "-" else darchived,
                 json_archive="" if jtarget == "-" else jtarget,
-                target=target, still_present="yes", last_check=_now())
+                target=target, still_present="yes", last_check=_now(),
+                data_hash=dhash, json_hash=jhash)
     PROCESSED += 1
 
 
@@ -1267,7 +1298,8 @@ def main(argv):
     global INCOMING_DIR, JSON_ARCHIVE_DIR, DATA_ARCHIVE_DIR, LOG_DIR, STABLE_SECONDS
     global LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
-    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT, REPORT_DELIMITER
+    global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT
+    global REPORT_HASH, REPORT_DELIMITER
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -1314,6 +1346,9 @@ def main(argv):
     REPORT_SPLIT = CFG.settings.get("REPORT_SPLIT", "none").strip().lower()
     if REPORT_SPLIT not in engine.REPORT_SPLITS:
         REPORT_SPLIT = "none"               # validate() reports it
+    REPORT_HASH = CFG.settings.get("REPORT_HASH", "none").strip().lower()
+    if REPORT_HASH not in engine.REPORT_HASHES:
+        REPORT_HASH = "none"
     try:
         REPORT_KEEP_DAYS = int(CFG.settings.get("REPORT_KEEP_DAYS", "90"))
     except ValueError:

@@ -8,6 +8,7 @@ and asserts the final state: file locations, log contents, and exit code.
 
 import csv
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -1466,7 +1467,8 @@ class TestE2E(E2EBase):
         with open(state, newline="") as fh:
             rows = list(csv.DictReader(fh))
         new_columns = ("data_archive", "json_archive", "target",
-                       "still_present", "last_check", "transit_seconds")
+                       "still_present", "last_check", "transit_seconds",
+                       "data_hash", "json_hash")
         older = [c for c in rows[0] if c not in new_columns]      # as an older version wrote it
         with open(state, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=older, extrasaction="ignore")
@@ -1613,6 +1615,49 @@ class TestE2E(E2EBase):
             time.sleep(0.05)
         self.dispatch()
         self.assertEqual(self.dispatch_order(), ["zulu.csv", "mike.csv", "alpha.csv"])
+
+    # 119: the report publishes digests that match the files themselves.
+    def test_119_report_carries_the_hashes(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/r"',
+                        extra=('REPORT_DIR = "%s"\nREPORT_HASH = sha256\n'
+                               'DISPATCH_WITHOUT_JSON = yes' % rep))
+        self.mkpair("paired", "csv", '{"category":"x"}', data="KNOWN PAYLOAD")
+        self.write_raw(self.inc("lonely.csv"), "KNOWN PAYLOAD")   # no sidecar
+        self.dispatch()
+        rows = {r["filename"]: r for r in self.read_report(rep)}
+
+        expected = hashlib.sha256(b"KNOWN PAYLOAD").hexdigest()
+        self.assertEqual(rows["paired.csv"]["data_hash"], expected)
+        self.assertEqual(rows["lonely.csv"]["data_hash"], expected)
+        self.assertEqual(rows["lonely.csv"]["json_hash"], "")      # none to hash
+        with open(os.path.join(self.archive, "paired.json"), "rb") as fh:
+            self.assertEqual(rows["paired.csv"]["json_hash"],
+                             hashlib.sha256(fh.read()).hexdigest())
+
+    # 120: md5 for partners who publish md5, and off by default.
+    def test_120_md5_and_off_by_default(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='REPORT_DIR = "%s"\nREPORT_HASH = md5' % rep)
+        self.mkpair("a", "csv", '{"category":"x"}', data="PAYLOAD")
+        self.dispatch()
+        row = self.read_report(rep)[0]
+        self.assertEqual(row["data_hash"], hashlib.md5(b"PAYLOAD").hexdigest())
+
+        self.write_conf('$category = "*" => "$OUT/r"', extra='REPORT_DIR = "%s"' % rep)
+        self.mkpair("b", "csv", '{"category":"x"}', data="PAYLOAD")
+        self.dispatch()
+        rows = {r["filename"]: r for r in self.read_report(rep)}
+        self.assertEqual(rows["b.csv"]["data_hash"], "")           # off unless asked
+        self.assertEqual(rows["b.csv"]["json_hash"], "")
+
+    # 121: an unusable REPORT_HASH is refused by --check.
+    def test_121_bad_report_hash_is_refused(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="REPORT_HASH = crc32")
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("REPORT_HASH must be one of", r.stderr)
 
     def dispatch_order(self):
         """The basenames dispatched this run, in the order the log shows."""
