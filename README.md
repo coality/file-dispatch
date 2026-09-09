@@ -119,6 +119,7 @@ with a large cookbook of rule and variable examples.
 | `REPORT_DIR` | | — | write `report.csv` here: one row per file, updated across runs. Unset = no report |
 | `REPORT_KEEP_DAYS` | | `90` | drop rows for files no longer around after this many days (`0` keeps everything) |
 | `REPORT_SPLIT` | | `none` | `daily` / `monthly` publish one file per period instead of a single `report.csv` |
+| `REPORT_HASH` | | `none` | `sha256` / `md5` — publish a digest of each dispatched file in the report |
 | `REQUIRED` | | — | comma-separated `$field`s the **sidecar** must provide, non-empty, else the file is left in place with an error; an explicit `null` counts as present, and a file with no sidecar is not checked |
 | `PYTHON` | | — | path to the Python 3 interpreter to run the engine with |
 
@@ -400,6 +401,8 @@ stuck.csv,2026-09-02T17:30:02.155,2026-09-02T17:30:01,/data/out/x,,failed,7,chec
 | `still_present` | `yes` / `no` — is the delivered file still sitting in the destination? Empty if it was never delivered |
 | `last_check` | when the file was last looked for (see below) |
 | `transit_seconds` | how long it waited in the destination before the downstream took it |
+| `data_hash` | digest of the data file, when `REPORT_HASH` is on |
+| `json_hash` | digest of the sidecar. Empty for a file dispatched without one |
 
 **A failure is never repeated**: the row is updated and `retries` grows, so one
 stuck file is one line however long it stays stuck. When it finally goes
@@ -416,6 +419,32 @@ are dropped after `REPORT_KEEP_DAYS`.
 New columns are appended rather than inserted, so a report written by an older
 version still loads — the column it lacks simply reads back empty — and a
 consumer reading by position keeps working.
+
+### Publishing a digest
+
+`REPORT_HASH = sha256` (or `md5`) records a digest of each dispatched file, so
+the report can be checked against what the downstream system says it received:
+
+```csv
+filename,…,data_hash,json_hash
+paired.csv,…,8c386f3df38a8564450b05c92695db749e93043f782df99ce8ebfcb6ebdc43e9,4bfae5b083…
+lonely.csv,…,8c386f3df38a8564450b05c92695db749e93043f782df99ce8ebfcb6ebdc43e9,
+```
+
+The digests are the same ones `sha256sum` and `md5sum` produce, so a partner's
+published checksum can be compared directly — which is why `md5` is offered
+despite being the weaker choice: matching what the other side publishes is the
+whole point. `json_hash` is empty for a file dispatched without a sidecar.
+
+Both are read **before** the move, from the incoming files: afterwards the
+source is gone and the delivered copy may already have been taken. They are
+recorded on success; a file that never left has no digest.
+
+**It is off by default because it costs a full read of every dispatched file.**
+A same-filesystem move otherwise never touches the contents at all. Locally that
+read runs at roughly 1.5 GB/s for `sha256` and 700 MB/s for `md5` — irrelevant
+for ordinary files — but over a network share it is real traffic, proportional
+to what you dispatch.
 
 ### Following what the downstream does
 
