@@ -565,6 +565,26 @@ reason='invalid JSON'               cause='Expecting property name enclosed in d
 reason='invalid JSON'               cause='top level is list, expected an object'
 ```
 
+### The order files are processed in
+
+A run scans the whole incoming directory, pairs everything, and only then starts
+moving. The batch is dispatched **oldest arrival first**.
+
+Arrival means when the file landed in `INCOMING_DIR` — its `ctime` — which is
+not the same as when its content was written:
+
+```
+mtime (content written)      14:01:22.387
+ctime (arrived in the dir)   14:01:23.599
+```
+
+A producer that writes elsewhere and moves the file in keeps the original
+mtime, so ordering by mtime would let an old file re-dropped today jump ahead of
+everything already queued. `ctime` puts it where it belongs, at the back.
+
+A file that cannot be stat'd sorts last rather than failing the run, and the
+name breaks ties, so the order is reproducible.
+
 ### How a file is moved
 
 Never with a single opaque call. The move is a sequence of steps, each of which

@@ -1580,6 +1580,48 @@ class TestE2E(E2EBase):
         self.assertIn("REPORT_DELIMITER must be a single character",
                       r.stdout + r.stderr)
 
+    # 116: files are dispatched oldest-arrival first, not alphabetically.
+    def test_116_processed_in_arrival_order(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        for name in ("zulu", "mike", "alpha"):          # reverse alphabetical
+            self.mkpair(name, "csv", '{"category":"x"}')
+            time.sleep(0.05)
+        self.dispatch()
+        self.assertEqual(self.dispatch_order(), ["zulu.csv", "mike.csv", "alpha.csv"])
+
+    # 117: arrival is when the file landed here, not when its content was
+    #      written -- an old file re-dropped today goes to the back of the queue.
+    def test_117_a_re_dropped_old_file_does_not_jump_the_queue(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("recent", "csv", '{"category":"x"}')
+        time.sleep(0.05)
+        self.mkpair("ancient", "csv", '{"category":"x"}')
+        # Backdate its content by years; touching it also restamps ctime to now,
+        # which is exactly what moving a file into the directory does.
+        old = time.time() - 5 * 365 * 24 * 3600
+        for name in ("ancient.csv", "ancient.json"):
+            os.utime(self.inc(name), (old, old))
+        self.dispatch()
+        self.assertEqual(self.dispatch_order(), ["recent.csv", "ancient.csv"])
+
+    # 118: files with no sidecar are ordered the same way.
+    def test_118_sidecarless_files_are_ordered_too(self):
+        self.write_conf('$Filename ENDSWITH ".csv" => "$OUT/r"',
+                        extra="DISPATCH_WITHOUT_JSON = yes")
+        for name in ("zulu", "mike", "alpha"):
+            self.write_raw(self.inc(name + ".csv"), "DATA")
+            time.sleep(0.05)
+        self.dispatch()
+        self.assertEqual(self.dispatch_order(), ["zulu.csv", "mike.csv", "alpha.csv"])
+
+    def dispatch_order(self):
+        """The basenames dispatched this run, in the order the log shows."""
+        out = []
+        for line in self.log().splitlines():
+            if "SUCCESS move source=" in line:
+                out.append(os.path.basename(line.split("source='", 1)[1].split("'", 1)[0]))
+        return out
+
     def backdate(self, rep, filename, when):
         """Rewrite one row's first_seen, to stand in for an earlier period."""
         path = os.path.join(rep, "report.state")

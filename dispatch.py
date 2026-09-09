@@ -1087,6 +1087,15 @@ def process_pair(jf, df):
     PROCESSED += 1
 
 
+def _arrival_order(pair):
+    """Sort key for one (sidecar, data) pair: when the data file arrived here."""
+    _, df = pair
+    try:
+        return (0, os.stat(df).st_ctime, os.path.basename(df))
+    except OSError:
+        return (1, 0.0, os.path.basename(df))   # unreadable: last, still ordered
+
+
 def process_all():
     """Scan INCOMING_DIR, pair the files, let the pairs settle, dispatch them.
 
@@ -1145,6 +1154,13 @@ def process_all():
         log("INFO", "waiting for metadata source='%s' reason='no .json sidecar yet' - left in place" % p)
         report_note(p, "pending", reason="no .json sidecar yet")
         INCOMPLETE += 1
+
+    # Oldest arrival first. ctime is when the file landed in this directory,
+    # which is not mtime: a producer that writes elsewhere and moves the file in
+    # keeps the original mtime, so an old file re-dropped today would otherwise
+    # jump the queue. A file we cannot stat sorts last rather than crashing the
+    # run, and the name breaks ties so the order is reproducible.
+    pairs.sort(key=_arrival_order)
 
     if not pairs:
         return 0
