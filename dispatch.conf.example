@@ -201,7 +201,21 @@ TARGET  = $group + "/" + $category     # same thing, written with "+"
 #
 # A value can also be a Python-style ternary:  A if <condition> else B
 # The <condition> uses the same operators as rules. Ternaries chain like if/elif/else.
-# Functions available in a value: int(...), upper(...), lower(...).
+# Functions available in a value:
+#   int(...)                   "007"      -> "7"
+#   upper(...) / lower(...)
+#   left(v, n)                 take the first n characters
+#   right(v, n)                take the last n
+#   substr(v, start[, len])    from 'start', counting from 0; to the end if
+#                              no length is given -- so left(v, 2) and
+#                              substr(v, 0, 2) are the same thing
+# Asking for more than there is gives what is there (no error); a count that is
+# zero, negative or not a number gives "". Calls nest and concatenate:
+#   SHORT_BU = left($BU, 2)
+#   SUFFIX   = right($BU, 3)
+#   MIDDLE   = substr($BU, 2, 3)
+#   ORG      = upper(left($BU, 3))
+# A wrong number of arguments is refused by --check, not silently empty.
 TEAM    = "core" if $unit = "central" else $unit
 TIER    = "gold" if $vip = "yes" else "silver" if $amount = "high" else "std"
 SHARD   = int($id)                     # e.g. "007" -> "7"

@@ -1659,6 +1659,16 @@ class TestE2E(E2EBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("REPORT_HASH must be one of", r.stderr)
 
+    # 122: the string functions route a real file end to end.
+    def test_122_string_functions_build_a_destination(self):
+        self.write_conf('$unit = "*" => "$OUT/" + $SHORT + "/" + $SUFFIX + "/" + $MIDDLE',
+                        extra=('SHORT  = left($unit, 2)\n'
+                               'SUFFIX = right($unit, 4)\n'
+                               'MIDDLE = substr($unit, 2, 3)'))
+        self.mkpair("a", "csv", '{"unit":"H01FR2024"}')
+        self.dispatch()
+        self.exists(self.op("H0", "2024", "1FR", "a.csv"))
+
     def dispatch_order(self):
         """The basenames dispatched this run, in the order the log shows."""
         out = []

@@ -266,6 +266,23 @@ concatenation and no function call there.
 | `int(...)` | `int($id)` on `"007"` | `"7"` (non-numbers are left unchanged) |
 | `upper(...)` | `upper($code)` on `"abc"` | `"ABC"` |
 | `lower(...)` | `lower($code)` on `"ABC"` | `"abc"` |
+| `left(..., n)` | `left($unit, 2)` on `"H01FR2024"` | `"H0"` |
+| `right(..., n)` | `right($unit, 4)` on `"H01FR2024"` | `"2024"` |
+| `substr(..., start[, len])` | `substr($unit, 2, 3)` on `"H01FR2024"` | `"1FR"` |
+
+`substr` counts from **0**, like the rest of the language, so `left(v, 2)` and
+`substr(v, 0, 2)` are the same thing; with no length it runs to the end. Asking
+for more characters than there are gives what is there rather than failing, as
+a Python slice would — in a destination path that is far less surprising than a
+failed run. A count that is zero, negative or not a number gives `""`.
+
+Calls nest and concatenate like any other value: `upper(left($unit, 3))`,
+`left($unit, 2)"/"$group`. **A call with the wrong number of arguments is
+refused by `--check`** rather than quietly producing an empty path segment:
+
+```
+config: line 4: left() takes 2 arguments, got 1
+```
 
 **Ternaries** — a value may be a Python-style `A if <condition> else B`, chainable
 like `if`/`elif`/`else`. The `<condition>` uses the **same operators as rules**
