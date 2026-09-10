@@ -222,12 +222,74 @@ def _cast_int(v):
 
 
 # Value-expression functions: func(<value>). Quote text to use these names literally.
+def _whole(n, default=0):
+    """An argument meant to be a count, as an int. Anything else counts as 0."""
+    try:
+        return int(float(n))
+    except (ValueError, TypeError):
+        return default
+
+
+def _left(v, n):
+    n = _whole(n)
+    return v[:n] if n > 0 else ""
+
+
+def _right(v, n):
+    n = _whole(n)
+    return v[-n:] if n > 0 else ""
+
+
+def _substr(v, start, length=None):
+    """Characters from 'start', counting from 0, and 'length' of them.
+
+    Zero-based, like left() and the rest of the language, so left(v, 2) and
+    substr(v, 0, 2) are the same thing. Out of range is not an error: as in
+    Python, a slice past the end simply gives what is there, which in a
+    destination path is far less surprising than a failed run.
+    """
+    start = _whole(start)
+    if length is None:
+        return v[start:]
+    length = _whole(length)
+    return v[start:start + length] if length > 0 else ""
+
+
+# name -> (min args, max args, function). Every value function lives here; the
+# arity is checked when the config is read, not when a file goes through.
 FUNCS = {
-    "int": _cast_int,
-    "upper": lambda v: v.upper(),
-    "lower": lambda v: v.lower(),
+    "int": (1, 1, _cast_int),
+    "upper": (1, 1, lambda v: v.upper()),
+    "lower": (1, 1, lambda v: v.lower()),
+    "left": (2, 2, _left),
+    "right": (2, 2, _right),
+    "substr": (2, 3, _substr),
 }
 _FUNC_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def split_args(s):
+    """Split a function's arguments on commas at depth 0 and outside quotes.
+
+    Nested calls keep their own commas: substr(left($a, 4), 1, 2) is three
+    arguments, not five.
+    """
+    out, depth, q, start = [], 0, None, 0
+    for i, c in enumerate(s):
+        if q:
+            if c == q:
+                q = None
+        elif c in ('"', "'"):
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append(s[start:i])
+            start = i + 1
+    out.append(s[start:])
+    return out
 
 
 def _func_at(s, i):
@@ -252,6 +314,38 @@ def _func_at(s, i):
                 return (m.group(1), open_idx, j)
         j += 1
     return None
+
+
+def check_funcs(s):
+    """Arity problems in the function calls of a raw value, as messages.
+
+    Run when the config is read, so left($BU) is refused by --check instead of
+    quietly producing an empty path segment on every file for months. Only
+    known names are checked: anything else has always been literal text and
+    stays that way.
+    """
+    errors, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in ('"', "'"):                 # quoted text is not code
+            j = s.find(c, i + 1)
+            i = n if j == -1 else j + 1
+            continue
+        fn = _func_at(s, i)
+        if not fn:
+            i += 1
+            continue
+        name, open_idx, close_idx = fn
+        inner = s[open_idx + 1:close_idx]
+        low, high, _ = FUNCS[name]
+        count = len(split_args(inner))
+        if not low <= count <= high:
+            wanted = "%d" % low if low == high else "%d to %d" % (low, high)
+            errors.append("%s() takes %s argument%s, got %d"
+                          % (name, wanted, "" if wanted == "1" else "s", count))
+        errors += check_funcs(inner)        # nested calls too
+        i = close_idx + 1
+    return errors
 
 
 def assemble_value(s, ctx):
@@ -288,7 +382,10 @@ def assemble_value(s, ctx):
             name, open_idx, close_idx = fn
             if i > bare:
                 out.append(expand_refs(s[bare:i], ctx))
-            out.append(FUNCS[name](assemble_value(s[open_idx + 1:close_idx], ctx)))
+            args = [assemble_value(a, ctx) for a in split_args(s[open_idx + 1:close_idx])]
+            low, high, fn = FUNCS[name]
+            out.append(fn(*args) if low <= len(args) <= high else "")
+
             i = bare = close_idx + 1
             continue
         i += 1
@@ -700,6 +797,8 @@ class Config:
                     name, val = eq[0].strip(), eq[1].strip()
                     if not quotes_balanced(val):
                         self.errors.append("line %d: unbalanced quotes in value: %s" % (lineno, val))
+                    for problem in check_funcs(val):
+                        self.errors.append("line %d: %s" % (lineno, problem))
                     if name in RESERVED:
                         self._assign_setting(name, val, lineno)
                     elif IDENT_RE.fullmatch(name):
@@ -750,6 +849,8 @@ class Config:
             self.errors.append("line %d: rule has an empty destination" % lineno)
         if not quotes_balanced(dest):
             self.errors.append("line %d: unbalanced quotes in destination" % lineno)
+        for problem in check_funcs(body):
+            self.errors.append("line %d: %s" % (lineno, problem))
         ast = None
         if cond:
             try:

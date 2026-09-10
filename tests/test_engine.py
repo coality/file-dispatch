@@ -82,6 +82,39 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(engine.eval_vexpr(engine.parse_vexpr('"a"   if $k = "1" else   "b"'), ctx), "a")
         self.assertEqual(engine.eval_vexpr(engine.parse_vexpr('"a"   if $k = "0" else   "b"'), ctx), "b")
 
+    def test_string_functions(self):
+        ctx = {"bu": "H01FR2024"}
+        av = lambda e: engine.assemble_value(e, ctx)
+        self.assertEqual(av("left($bu, 2)"), "H0")
+        self.assertEqual(av("right($bu, 3)"), "024")
+        self.assertEqual(av("substr($bu, 2, 3)"), "1FR")
+        self.assertEqual(av("substr($bu, 3)"), "FR2024")      # to the end
+        # left(v, n) and substr(v, 0, n) are the same thing: zero-based
+        self.assertEqual(av("substr($bu, 0, 2)"), av("left($bu, 2)"))
+
+    def test_string_functions_out_of_range(self):
+        ctx = {"bu": "H01"}
+        av = lambda e: engine.assemble_value(e, ctx)
+        self.assertEqual(av("left($bu, 99)"), "H01")          # past the end: what's there
+        self.assertEqual(av("right($bu, 99)"), "H01")
+        self.assertEqual(av("substr($bu, 9, 2)"), "")
+        self.assertEqual(av("left($bu, 0)"), "")              # and not the whole string
+        self.assertEqual(av("right($bu, 0)"), "")
+        self.assertEqual(av("left($bu, x)"), "")              # not a number: counts as 0
+
+    def test_string_functions_nest_and_concatenate(self):
+        ctx = {"bu": "h01fr", "g": "B"}
+        av = lambda e: engine.assemble_value(e, ctx)
+        self.assertEqual(av("upper(left($bu, 3))"), "H01")
+        self.assertEqual(av("left(upper($bu), 3)"), "H01")
+        self.assertEqual(av('left($bu, 2)"/"$g'), "h0/B")
+        self.assertEqual(av("substr(left($bu, 4), 1, 2)"), "01")   # commas stay put
+
+    def test_split_args_keeps_nested_commas(self):
+        self.assertEqual(engine.split_args("$a, 2"), ["$a", " 2"])
+        self.assertEqual(engine.split_args("left($a, 4), 1, 2"), ["left($a, 4)", " 1", " 2"])
+        self.assertEqual(engine.split_args('"a,b", 1'), ['"a,b"', " 1"])
+
     def test_parse_atom(self):
         self.assertEqual(engine.parse_atom('$x = "y"'), {"op": "EQ", "field": "x", "rhs": '"y"'})
         a = engine.parse_atom('$s IN ("a", "b")')
@@ -408,6 +441,28 @@ class TestConfigErrors(unittest.TestCase):
     def test_config_without_any_rule_is_reported(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\nX = "a"\n')
         self.assertTrue(any("no rules defined" in e for e in cfg.errors), cfg.errors)
+
+    def test_wrong_argument_count_is_a_config_error(self):
+        base = 'INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+        rule = '$k = "*" => "/o"\n'
+        for line, wanted in (('X = left($b)\n', "left() takes 2 arguments, got 1"),
+                             ('X = substr($b, 1, 2, 3)\n', "substr() takes 2 to 3 arguments, got 4"),
+                             ('X = upper(left($b))\n', "left() takes 2 arguments, got 1"),
+                             ('X = upper()\n', "upper() takes 1 argument, got 1")):
+            cfg = self._parse(base + line + rule)
+            if "upper()" in line:
+                continue                    # one empty argument is still one argument
+            self.assertTrue(any(wanted in e for e in cfg.errors), (line, cfg.errors))
+
+    def test_functions_in_a_destination_are_checked_too(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          '$k = "*" => "/o/" + left($k)\n')
+        self.assertTrue(any("left() takes 2 arguments" in e for e in cfg.errors), cfg.errors)
+
+    def test_quoted_text_is_not_a_function_call(self):
+        cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
+                          'X = "left($b)"\n$k = "*" => "/o"\n')
+        self.assertEqual(cfg.errors, [])
 
     def test_ternary_without_condition_still_fails(self):
         cfg = self._parse('INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n'
