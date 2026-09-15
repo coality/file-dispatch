@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -249,8 +250,12 @@ class TestE2E(E2EBase):
         self.dispatch()
         with open(self.op("r", "a.xml")) as f:
             self.assertEqual(f.read(), "OLD")
-        suffixed = [n for n in os.listdir(self.op("r")) if n.startswith("a.xml.")]
-        self.assertTrue(suffixed, "no suffixed copy created")
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
+        self.assertEqual(len(suffixed), 1, "no stamped copy created")
+        # the stamp goes before the extension: a.20260915-143000.xml
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
+        with open(self.op("r", suffixed[0])) as f:
+            self.assertEqual(f.read(), "NEW")
 
     # 15
     def test_15_idempotence(self):
@@ -665,8 +670,9 @@ class TestE2E(E2EBase):
         self.dispatch()
         with open(os.path.join(self.archive, "a.json")) as f:
             self.assertEqual(f.read(), "OLD")
-        suffixed = [n for n in os.listdir(self.archive) if n.startswith("a.json.")]
-        self.assertTrue(suffixed, "no suffixed archive copy created")
+        suffixed = [n for n in os.listdir(self.archive) if n != "a.json"]
+        self.assertEqual(len(suffixed), 1, "no stamped archive copy created")
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.json$")
 
     # 54: ${brace} variable syntax works in a destination
     def test_54_brace_variable(self):
@@ -1538,7 +1544,7 @@ class TestE2E(E2EBase):
         rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["target"], self.op("r", "lot.csv"))
-        self.assertTrue(rows[1]["target"].startswith(self.op("r", "lot.csv.")), rows[1])
+        self.assertRegex(rows[1]["target"], r"/r/lot\.\d{8}-\d{6}\.csv$")
 
         os.remove(rows[1]["target"])                             # only the second one
         self.dispatch()
@@ -1669,6 +1675,261 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.exists(self.op("H0", "2024", "1FR", "a.csv"))
 
+
+    # ------------------------------------------------------------------ #
+    # 123-137: ON_EXISTING -- what happens when the destination already
+    # holds a file of the delivered name.
+    # ------------------------------------------------------------------ #
+    def old_file(self, *parts, content="OLD", when=None):
+        """A file already delivered earlier, with a known modification time."""
+        path = self.op(*parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.write_raw(path, content)
+        when = when if when is not None else time.mktime((2026, 9, 14, 9, 15, 0, 0, 0, -1))
+        os.utime(path, (when, when))
+        return path
+
+    def read(self, path):
+        with open(path) as fh:
+            return fh.read()
+
+    # 123 (regression): with no ON_EXISTING line the NEW file is the one
+    #     renamed -- stamped with the time of the dispatch, before the
+    #     extension, same convention as rename_existing -- and the old one keeps
+    #     its name.
+    def test_123_default_still_renames_the_new_file(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.old_file("r", "a.xml")
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        before = time.strftime("%Y%m%d-%H%M%S")
+        self.assertEqual(self.dispatch().returncode, 0)
+        after = time.strftime("%Y%m%d-%H%M%S")
+        self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
+        self.assertEqual(len(suffixed), 1, os.listdir(self.op("r")))
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
+        stamp = suffixed[0][len("a."):-len(".xml")]
+        self.assertTrue(before <= stamp <= after, (before, stamp, after))   # dispatch time
+        self.assertEqual(self.read(self.op("r", suffixed[0])), "NEW")
+        self.in_log("target='%s'" % self.op("r", suffixed[0]))
+        self.assertNotIn("previous=", self.log())
+
+    # 124 (regression): rename_new written out is the same as the default.
+    def test_124_explicit_rename_new_is_the_default(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_new")
+        self.old_file("r", "a.xml")
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
+        self.assertEqual(len(suffixed), 1)
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
+
+    # 125: rename_existing -- the old file takes a name dated with ITS OWN
+    #      modification time, before the extension; the new one keeps the name.
+    def test_125_rename_existing_dates_the_old_file(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        when = time.mktime((2026, 9, 14, 9, 15, 0, 0, 0, -1))
+        self.old_file("r", "commande.csv", when=when)
+        self.mkpair("commande", "csv", '{"category":"x"}', data="NEW")
+        self.assertEqual(self.dispatch().returncode, 0)
+
+        dated = self.op("r", "commande.20260914-091500.csv")
+        self.assertEqual(self.read(self.op("r", "commande.csv")), "NEW")
+        self.assertEqual(self.read(dated), "OLD")
+        self.assertEqual(int(os.stat(dated).st_mtime), int(when))    # the old file's date is kept
+        self.assertEqual(sorted(os.listdir(self.op("r"))),
+                         ["commande.20260914-091500.csv", "commande.csv"])
+        self.absent(self.inc("commande.csv"))
+        self.in_log("previous='%s'" % dated)
+        self.assertEqual(self.errlog(), "")
+
+    # 126: nothing to set aside -- an ordinary delivery, no previous= in the log.
+    def test_126_rename_existing_without_an_existing_file(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertEqual(os.listdir(self.op("r")), ["a.xml"])
+        self.in_log("SUCCESS move source=")
+        self.assertNotIn("previous=", self.log())
+
+    # 127: the dated name is already taken (same second): a counter, never a
+    #      replacement.
+    def test_127_dated_name_taken_gets_a_counter(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        self.old_file("r", "a.csv", content="OLDER")
+        self.old_file("r", "a.20260914-091500.csv", content="ALREADY-THERE")
+        self.old_file("r", "a.20260914-091500-2.csv", content="ALSO-THERE")
+        self.mkpair("a", "csv", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertEqual(self.read(self.op("r", "a.csv")), "NEW")
+        self.assertEqual(self.read(self.op("r", "a.20260914-091500.csv")), "ALREADY-THERE")
+        self.assertEqual(self.read(self.op("r", "a.20260914-091500-2.csv")), "ALSO-THERE")
+        self.assertEqual(self.read(self.op("r", "a.20260914-091500-3.csv")), "OLDER")
+
+    # 128: three deliveries in a row keep every version, newest under the name.
+    def test_128_successive_deliveries_keep_every_version(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        for i, data in enumerate(("V1", "V2", "V3")):
+            self.mkpair("lot", "csv", '{"category":"x"}', data=data)
+            src = self.inc("lot.csv")
+            t = time.mktime((2026, 9, 10 + i, 8, 0, 0, 0, 0, -1))
+            os.utime(src, (t, t))                               # each version its own date
+            self.dispatch()
+        self.assertEqual(self.read(self.op("r", "lot.csv")), "V3")
+        self.assertEqual(self.read(self.op("r", "lot.20260910-080000.csv")), "V1")
+        self.assertEqual(self.read(self.op("r", "lot.20260911-080000.csv")), "V2")
+        self.assertEqual(len(os.listdir(self.op("r"))), 3)
+
+    # 129: a name with no extension simply ends with the stamp.
+    def test_129_name_without_extension(self):
+        self.write_conf('$Filename = "*" => "$OUT/r"',
+                        extra="ON_EXISTING = rename_existing\nDISPATCH_WITHOUT_JSON = yes")
+        self.old_file("r", "README")
+        self.write_raw(self.inc("README"), "NEW")
+        self.dispatch()
+        self.assertEqual(self.read(self.op("r", "README")), "NEW")
+        self.assertEqual(self.read(self.op("r", "README.20260914-091500")), "OLD")
+
+    # 130: a directory under the name is never moved: error, file left in place.
+    def test_130_existing_directory_is_not_touched(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        os.makedirs(self.op("r", "a.xml", "inside"))
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertTrue(os.path.isdir(self.op("r", "a.xml", "inside")))
+        self.assertEqual(os.listdir(self.op("r")), ["a.xml"])
+        self.exists(self.inc("a.xml"))
+        self.exists(self.inc("a.json"))
+        self.assertIn("directory or symlink under this name", self.errlog())
+        self.in_log("errors=1")
+        # the dry run predicts the very same failure line
+        real = [l.split("] ", 1)[1] for l in self.log().splitlines() if "FAILURE" in l]
+        os.remove(self.logf)
+        self.dispatch("--dry-run")
+        dry = [l.split("] ", 1)[1] for l in self.log().splitlines() if "FAILURE" in l]
+        self.assertEqual([l[len("DRY-RUN "):] for l in dry], real)
+
+    # 131: nor is a symlink -- it could point anywhere.
+    def test_131_existing_symlink_is_not_touched(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        elsewhere = os.path.join(self.sb, "elsewhere.xml")
+        self.write_raw(elsewhere, "PRECIOUS")
+        os.makedirs(self.op("r"))
+        os.symlink(elsewhere, self.op("r", "a.xml"))
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertTrue(os.path.islink(self.op("r", "a.xml")))
+        self.assertEqual(self.read(elsewhere), "PRECIOUS")
+        self.exists(self.inc("a.xml"))
+        self.assertIn("directory or symlink under this name", self.errlog())
+
+    # 132: the delivery fails AFTER the old file was renamed: it gets its name
+    #      back, and the incoming file stays for the next run.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_132_failed_delivery_restores_the_old_name(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        self.old_file("r", "a.xml")
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        os.chmod(self.inc("a.xml"), 0)                       # unreadable: the move refuses
+        try:
+            self.dispatch()
+        finally:
+            os.chmod(self.inc("a.xml"), 0o644)
+        self.assertEqual(os.listdir(self.op("r")), ["a.xml"])
+        self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
+        self.exists(self.inc("a.xml"))
+        self.in_log("RESTORED existing file")
+        self.assertIn("reason='move failed'", self.errlog())
+
+        self.dispatch()                                      # next run, file readable again
+        self.assertEqual(self.read(self.op("r", "a.xml")), "NEW")
+        self.assertEqual(self.read(self.op("r", "a.20260914-091500.xml")), "OLD")
+
+    # 133: the old file cannot be renamed (read-only destination): nothing
+    #      moves at all, and the log says which step refused.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_133_unrenamable_existing_file_leaves_everything_in_place(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        self.old_file("r", "a.xml")
+        os.chmod(self.op("r"), 0o555)
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        try:
+            self.dispatch()
+        finally:
+            os.chmod(self.op("r"), 0o755)
+        self.assertEqual(os.listdir(self.op("r")), ["a.xml"])
+        self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
+        self.exists(self.inc("a.xml"))
+        self.exists(self.inc("a.json"))
+        self.assertIn("existing file could not be renamed", self.errlog())
+        self.in_log("DIAG rename")
+
+    # 134: --dry-run announces the rename, performs none, and logs the same
+    #      SUCCESS line a real run then writes.
+    def test_134_dry_run_announces_the_rename(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = rename_existing")
+        self.old_file("r", "a.xml")
+        self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        self.dispatch("--dry-run")
+        self.assertEqual(os.listdir(self.op("r")), ["a.xml"])
+        self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
+        dry = [l.split("] ", 1)[1] for l in self.log().splitlines() if "SUCCESS" in l]
+        self.assertEqual(len(dry), 1)
+        self.assertIn("previous='%s'" % self.op("r", "a.20260914-091500.xml"), dry[0])
+        os.remove(self.logf)
+        self.dispatch()
+        real = [l.split("] ", 1)[1] for l in self.log().splitlines() if "SUCCESS" in l]
+        self.assertEqual([l[len("DRY-RUN "):] for l in dry], real)
+
+    # 135: the report keeps watching each delivery's own file -- the old row
+    #      follows the renamed file, the new row takes the original name.
+    def test_135_report_follows_the_renamed_file(self):
+        rep = os.path.join(self.sb, "report")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='ON_EXISTING = rename_existing\nREPORT_DIR = "%s"' % rep)
+        self.mkpair("lot", "csv", '{"category":"x"}', data="V1")
+        t = time.mktime((2026, 9, 10, 8, 0, 0, 0, 0, -1))
+        os.utime(self.inc("lot.csv"), (t, t))
+        self.dispatch()
+        time.sleep(1.1)                                          # a distinct first_seen
+        self.mkpair("lot", "csv", '{"category":"x"}', data="V2")
+        self.dispatch()
+
+        rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["target"], self.op("r", "lot.20260910-080000.csv"))
+        self.assertEqual(rows[1]["target"], self.op("r", "lot.csv"))
+        self.assertEqual([r["still_present"] for r in rows], ["yes", "yes"])
+
+        os.remove(self.op("r", "lot.20260910-080000.csv"))       # the OLD version is taken
+        self.dispatch()
+        rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
+        self.assertEqual(rows[0]["still_present"], "no")         # the right row closes
+        self.assertEqual(rows[1]["still_present"], "yes")
+
+    # 136: the archives keep their own collision rule, unchanged by ON_EXISTING.
+    def test_136_archives_are_unaffected(self):
+        darch = os.path.join(self.sb, "darch")
+        self.write_conf('$category = "*" => "$OUT/r"',
+                        extra='ON_EXISTING = rename_existing\nDATA_ARCHIVE_DIR = "%s"' % darch)
+        self.old_file("r", "a.csv")
+        self.mkpair("a", "csv", '{"category":"x"}', data="NEW")
+        self.dispatch()
+        self.assertEqual(self.read(os.path.join(darch, "a.csv")), "NEW")
+        self.exists(os.path.join(self.archive, "a.json"))
+        self.assertEqual(self.read(self.op("r", "a.csv")), "NEW")
+
+    # 137: an unknown ON_EXISTING is refused before anything runs.
+    def test_137_bad_on_existing_is_refused(self):
+        self.write_conf('$category = "*" => "$OUT/r"', extra="ON_EXISTING = overwrite")
+        self.mkpair("a", "xml", '{"category":"x"}')
+        r = self.run_args(["--check", self.conf])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ON_EXISTING must be one of rename_new, rename_existing", r.stderr)
+        self.dispatch()
+        self.exists(self.inc("a.xml"))                           # a real run refuses too
+
     def dispatch_order(self):
         """The basenames dispatched this run, in the order the log shows."""
         out = []
@@ -1717,9 +1978,10 @@ class TestE2E(E2EBase):
             self.dispatch()
         suffixed = [f for f in os.listdir(self.op("r")) if f != "lot.csv"]
         self.assertEqual(len(suffixed), 1, suffixed)
-        stamp = suffixed[0][len("lot.csv."):]
-        self.exists(os.path.join(darch, "lot.csv." + stamp))
-        self.exists(os.path.join(self.archive, "lot.json." + stamp))
+        self.assertRegex(suffixed[0], r"^lot\.\d{8}-\d{6}\.csv$")
+        stamp = suffixed[0][len("lot."):-len(".csv")]
+        self.exists(os.path.join(darch, "lot.%s.csv" % stamp))
+        self.exists(os.path.join(self.archive, "lot.%s.json" % stamp))
 
     # 107: archiving is secondary -- a failure there is reported, but what was
     #      delivered stays delivered and is not sent again.
@@ -1744,6 +2006,220 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.exists(self.op("r", "a.csv"))
         self.assertNotIn("data_archived", self.log())
+
+
+class TestStampedNaming(unittest.TestCase):
+    """One naming convention for every renamed file (stamped_name): the new file
+    under rename_new and in the archives (collision_safe), the file already
+    there under rename_existing (previous_name)."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        import dispatch                                   # noqa: E402
+        self.d = dispatch
+        self.sb = tempfile.mkdtemp(prefix="fd-name-")
+
+    def tearDown(self):
+        shutil.rmtree(self.sb, ignore_errors=True)
+
+    def put(self, name):
+        with open(os.path.join(self.sb, name), "w") as fh:
+            fh.write("x")
+
+    def p(self, name):
+        return os.path.join(self.sb, name)
+
+    def test_a_free_name_is_kept_as_is(self):
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"), self.p("lot.csv"))
+
+    def test_collision_puts_the_stamp_before_the_extension(self):
+        self.put("lot.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000.csv"))
+
+    def test_collision_without_a_suffix_uses_the_current_time(self):
+        self.put("lot.csv")
+        before = time.strftime("%Y%m%d-%H%M%S")
+        got = os.path.basename(self.d.collision_safe(self.sb, "lot.csv"))
+        after = time.strftime("%Y%m%d-%H%M%S")
+        self.assertRegex(got, r"^lot\.\d{8}-\d{6}\.csv$")
+        self.assertTrue(before <= got[4:19] <= after, got)
+
+    def test_the_extension_is_always_last(self):
+        for name, expected in (("dump.tar.gz", "dump.tar.20260915-143000.gz"),
+                               ("README", "README.20260915-143000"),
+                               (".env", ".env.20260915-143000"),
+                               ("a.b.c.json", "a.b.c.20260915-143000.json")):
+            self.put(name)
+            self.assertEqual(self.d.collision_safe(self.sb, name, "20260915-143000"), self.p(expected))
+
+    def test_a_taken_stamped_name_gets_a_counter_not_the_pid(self):
+        self.put("lot.csv")
+        self.put("lot.20260915-143000.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000-2.csv"))
+        self.put("lot.20260915-143000-2.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000-3.csv"))
+
+    def test_a_dangling_symlink_is_a_collision(self):
+        os.symlink(self.p("nowhere"), self.p("lot.csv"))
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000.csv"))
+
+    def test_both_modes_share_one_convention(self):
+        # same stamp in, same name out, whichever file is being renamed
+        self.put("lot.csv")
+        t = time.mktime((2026, 9, 15, 14, 30, 0, 0, 0, -1))
+        os.utime(self.p("lot.csv"), (t, t))
+        self.assertEqual(self.d.previous_name(self.sb, "lot.csv"),
+                         self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"))
+
+
+class TestOnExistingHelpers(unittest.TestCase):
+    """The ON_EXISTING = rename_existing building blocks, called directly, so
+    each guarantee is pinned down on its own: naming, the rename, its fallback
+    for shares that refuse to rename, the undo, and the report bookkeeping."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        import dispatch                                   # noqa: E402
+        self.d = dispatch
+        self.sb = tempfile.mkdtemp(prefix="fd-onex-")
+        self.when = time.mktime((2026, 9, 14, 9, 15, 0, 0, 0, -1))
+        self._saved = (dispatch._report, set(dispatch._report_seen), dispatch.REPORT_DIR)
+
+    def tearDown(self):
+        self.d._report, self.d._report_seen, self.d.REPORT_DIR = self._saved
+        shutil.rmtree(self.sb, ignore_errors=True)
+
+    def put(self, name, content="OLD", when=None):
+        path = os.path.join(self.sb, name)
+        with open(path, "w") as fh:
+            fh.write(content)
+        t = self.when if when is None else when
+        os.utime(path, (t, t))
+        return path
+
+    def p(self, name):
+        return os.path.join(self.sb, name)
+
+    # -- previous_name ------------------------------------------------------
+    def test_stamp_is_the_modification_time_before_the_extension(self):
+        self.put("commande.csv")
+        self.assertEqual(self.d.previous_name(self.sb, "commande.csv"),
+                         self.p("commande.20260914-091500.csv"))
+
+    def test_stamp_follows_the_file_not_the_clock(self):
+        self.put("a.csv", when=time.mktime((2020, 1, 2, 3, 4, 5, 0, 0, -1)))
+        self.assertEqual(self.d.previous_name(self.sb, "a.csv"), self.p("a.20200102-030405.csv"))
+
+    def test_only_the_last_extension_is_kept_after_the_stamp(self):
+        self.put("dump.tar.gz")
+        self.assertEqual(self.d.previous_name(self.sb, "dump.tar.gz"),
+                         self.p("dump.tar.20260914-091500.gz"))
+
+    def test_no_extension_and_dotfile(self):
+        self.put("README")
+        self.put(".env")
+        self.assertEqual(self.d.previous_name(self.sb, "README"), self.p("README.20260914-091500"))
+        self.assertEqual(self.d.previous_name(self.sb, ".env"), self.p(".env.20260914-091500"))
+
+    def test_taken_names_get_a_counter(self):
+        self.put("a.csv")
+        self.put("a.20260914-091500.csv")
+        self.put("a.20260914-091500-2.csv")
+        self.assertEqual(self.d.previous_name(self.sb, "a.csv"), self.p("a.20260914-091500-3.csv"))
+
+    def test_a_dangling_symlink_counts_as_taken(self):
+        self.put("a.csv")
+        os.symlink(self.p("nowhere"), self.p("a.20260914-091500.csv"))
+        self.assertEqual(self.d.previous_name(self.sb, "a.csv"), self.p("a.20260914-091500-2.csv"))
+
+    def test_a_missing_file_has_no_previous_name(self):
+        self.assertIsNone(self.d.previous_name(self.sb, "absent.csv"))
+
+    # -- set_aside ----------------------------------------------------------
+    def test_set_aside_renames_and_keeps_content_and_date(self):
+        src = self.put("a.csv", "OLD")
+        dst = self.p("a.20260914-091500.csv")
+        self.assertEqual(self.d.set_aside(src, dst), (None, None))
+        self.assertFalse(os.path.exists(src))
+        with open(dst) as fh:
+            self.assertEqual(fh.read(), "OLD")
+        self.assertEqual(int(os.stat(dst).st_mtime), int(self.when))
+
+    def test_set_aside_never_replaces_a_file(self):
+        src = self.put("a.csv", "OLD")
+        dst = self.put("taken.csv", "KEEP ME")
+        step, exc = self.d.set_aside(src, dst)
+        self.assertEqual(step, "check")
+        with open(dst) as fh:
+            self.assertEqual(fh.read(), "KEEP ME")
+        self.assertTrue(os.path.exists(src))
+
+    def test_set_aside_falls_back_to_copy_when_rename_is_refused(self):
+        src = self.put("a.csv", "OLD")
+        dst = self.p("a.20260914-091500.csv")
+        with unittest.mock.patch.object(self.d.os, "rename", side_effect=PermissionError(1, "refused")):
+            self.assertEqual(self.d.set_aside(src, dst), (None, None))
+        self.assertFalse(os.path.exists(src))
+        with open(dst) as fh:
+            self.assertEqual(fh.read(), "OLD")
+        self.assertEqual(int(os.stat(dst).st_mtime), int(self.when))     # copystat kept it
+        self.assertEqual(sorted(os.listdir(self.sb)), ["a.20260914-091500.csv"])  # no partial left
+
+    def test_set_aside_undoes_the_copy_when_the_original_cannot_be_removed(self):
+        src = self.put("a.csv", "OLD")
+        dst = self.p("a.20260914-091500.csv")
+        real_remove = os.remove
+
+        def remove(path, *a, **kw):
+            if path == src:
+                raise PermissionError(1, "refused")
+            return real_remove(path, *a, **kw)
+        with unittest.mock.patch.object(self.d.os, "rename", side_effect=PermissionError(1, "refused")), \
+                unittest.mock.patch.object(self.d.os, "remove", side_effect=remove):
+            step, _exc = self.d.set_aside(src, dst)
+        self.assertEqual(step, "remove_existing")
+        self.assertEqual(os.listdir(self.sb), ["a.csv"])                  # as it was found
+
+    # -- restore_aside ------------------------------------------------------
+    def test_restore_puts_the_name_back(self):
+        prev = self.put("a.20260914-091500.csv", "OLD")
+        self.assertTrue(self.d.restore_aside(prev, self.p("a.csv")))
+        self.assertEqual(os.listdir(self.sb), ["a.csv"])
+
+    def test_restore_never_replaces_a_file_that_appeared(self):
+        prev = self.put("a.20260914-091500.csv", "OLD")
+        self.put("a.csv", "SOMEONE ELSE")
+        self.assertFalse(self.d.restore_aside(prev, self.p("a.csv")))
+        with open(self.p("a.csv")) as fh:
+            self.assertEqual(fh.read(), "SOMEONE ELSE")
+        self.assertTrue(os.path.exists(prev))
+
+    def test_restore_falls_back_to_copy_when_rename_is_refused(self):
+        prev = self.put("a.20260914-091500.csv", "OLD")
+        with unittest.mock.patch.object(self.d.os, "rename", side_effect=PermissionError(1, "refused")):
+            self.assertTrue(self.d.restore_aside(prev, self.p("a.csv")))
+        self.assertEqual(os.listdir(self.sb), ["a.csv"])
+
+    # -- report_retarget ----------------------------------------------------
+    def test_retarget_moves_only_the_watched_delivery_of_that_path(self):
+        self.d.REPORT_DIR = self.sb
+        old, new = "/out/a.csv", "/out/a.20260914-091500.csv"
+        rows = {
+            ("a.csv", "1"): {"status": "success", "still_present": "yes", "target": old},
+            ("a.csv", "2"): {"status": "success", "still_present": "no", "target": old},
+            ("b.csv", "3"): {"status": "success", "still_present": "yes", "target": "/out/b.csv"},
+            ("a.csv", "4"): {"status": "failed", "still_present": "", "target": ""},
+        }
+        self.d._report, self.d._report_seen = rows, set()
+        self.d.report_retarget(old, new)
+        self.assertEqual(rows[("a.csv", "1")]["target"], new)
+        self.assertEqual(rows[("a.csv", "2")]["target"], old)            # already consumed
+        self.assertEqual(rows[("b.csv", "3")]["target"], "/out/b.csv")
+        self.assertEqual(self.d._report_seen, {("a.csv", "1")})
 
 
 class TestLogRotation(unittest.TestCase):

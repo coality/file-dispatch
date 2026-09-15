@@ -63,6 +63,7 @@ REPORT_KEEP_DAYS = 90
 REPORT_DELIMITER = ","                  # ";" for a French-locale Excel/Power BI
 REPORT_SPLIT = "none"                   # none | daily | monthly
 REPORT_HASH = "none"                    # none | sha256 | md5
+ON_EXISTING = "rename_new"              # rename_new | rename_existing
 
 DRY_RUN = False
 DEBUG = False
@@ -200,25 +201,115 @@ def _dest_problem(path):
         parent = up
 
 
+def stamped_name(directory, name, stamp):
+    """A free path under 'directory' for 'name' carrying 'stamp', never an
+    existing one.
+
+    One naming convention for every renamed file, whichever file it is: the
+    stamp goes BEFORE the extension, so the file still opens with the same
+    program -- commande.csv -> commande.20260914-091500.csv. Only the last
+    extension counts (dump.tar.gz -> dump.tar.20260914-091500.gz) and a name
+    with no extension simply ends with the stamp. If that name is taken too, a
+    counter follows the stamp: commande.20260914-091500-2.csv, then -3, ...
+
+    lexists rather than exists: a dangling symlink still occupies the name, and
+    a rename onto it would replace the link.
+    """
+    stem, ext = os.path.splitext(name)
+    candidate = os.path.join(directory, "%s.%s%s" % (stem, stamp, ext))
+    n = 2
+    while os.path.lexists(candidate):
+        candidate = os.path.join(directory, "%s.%s-%d%s" % (stem, stamp, n, ext))
+        n += 1
+    return candidate
+
+
 def collision_safe(directory, name, suffix=None):
     """A path under 'directory' for 'name' that does not overwrite anything.
 
     Two files with the same name arriving on different days is normal, so a
-    collision suffixes the timestamp (and then the pid, if a run is fast enough
-    to collide within one second) instead of replacing what is already there.
+    collision stamps the new file with the time of the dispatch
+    (lot.csv -> lot.20260904-160320.csv, see stamped_name) instead of replacing
+    what is already there.
 
-    'suffix' lets one pair share a single suffix across the destination, the
+    'suffix' lets one pair share a single stamp across the destination, the
     data archive and the JSON archive. Computing it independently per file
     would work almost always and then, once in a while, straddle a second and
     leave the three copies of one delivery under two different names.
     """
     path = os.path.join(directory, name)
-    if os.path.exists(path):
-        ts = suffix or time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(directory, "%s.%s" % (name, ts))
-        if os.path.exists(path):
-            path = os.path.join(directory, "%s.%s.%d" % (name, ts, os.getpid()))
+    if os.path.lexists(path):
+        path = stamped_name(directory, name, suffix or time.strftime("%Y%m%d-%H%M%S"))
     return path
+
+
+NOT_A_FILE = ("the destination already holds a directory or symlink under this name "
+              "(ON_EXISTING is rename_existing)")
+
+
+def previous_name(directory, name):
+    """Where the file already called 'name' in 'directory' is set aside under
+    ON_EXISTING = rename_existing, or None if it cannot be stat'ed.
+
+    Same convention as every renamed file (see stamped_name), but the stamp is
+    that file's own modification time, not "now" and not a creation date. Both
+    ways a delivery moves a file keep the source's mtime (a rename does not
+    touch it, the staged copy restores it with copystat), so it is the date of
+    the file as it was delivered -- the same date $Filedatetime and the report's
+    file_date show. A true creation time is not something Python can read on
+    Linux, and a copy would reset it anyway.
+    """
+    try:
+        mtime = os.stat(os.path.join(directory, name)).st_mtime
+        stamp = datetime.fromtimestamp(mtime).strftime("%Y%m%d-%H%M%S")
+    except (OSError, OverflowError, ValueError):
+        return None
+    return stamped_name(directory, name, stamp)
+
+
+def set_aside(path, previous):
+    """Rename the file at 'path' to 'previous', leaving 'path' free.
+
+    Returns (step, exc) like move_file: (None, None) on success. A rename first
+    -- atomic, and within one directory -- then, for a share that refuses to
+    rename, a verified copy followed by removing the original. If that removal
+    fails the copy is discarded again, so either the file has moved or nothing
+    has changed.
+    """
+    if os.path.lexists(previous):
+        return ("check", OSError(17, "name for the existing file is already taken", previous))
+    try:
+        os.rename(path, previous)
+        return (None, None)
+    except OSError:
+        pass
+    step, exc = copy_file(path, previous)
+    if step:
+        return (step, exc)
+    try:
+        os.remove(path)
+    except OSError as exc:
+        _discard(previous)
+        return ("remove_existing", exc)
+    return (None, None)
+
+
+def restore_aside(previous, path):
+    """Undo set_aside after a delivery that failed: put the old file back under
+    its original name, so the destination is left as it was found. Returns
+    whether it worked. Never replaces a file that has appeared at 'path' since."""
+    if os.path.lexists(path):
+        return False
+    try:
+        os.rename(previous, path)
+        return True
+    except OSError:
+        pass
+    step, _exc = copy_file(previous, path)
+    if step:
+        return False
+    _discard(previous)
+    return True
 
 
 def paths_open_for_write(paths):
@@ -773,6 +864,24 @@ def report_note(path, status, destination="", reason="", file_date=None,
     return key
 
 
+def report_retarget(old, new):
+    """A delivery that was watched at 'old' now lives at 'new'.
+
+    Under ON_EXISTING = rename_existing a new file takes the name of the one
+    already delivered, which is set aside under a dated name. Without this the
+    old row would keep watching 'old', find the NEW file there, and report the
+    old delivery as still waiting forever -- while its real file could be
+    consumed without anyone noticing.
+    """
+    if _report is None or not REPORT_DIR:
+        return
+    for key, row in _report.items():
+        if (row.get("status") == "success" and row.get("still_present") == "yes"
+                and row.get("target") == old):
+            row["target"] = new
+            _report_seen.add(key)
+
+
 def report_check_targets():
     """Follow what the downstream system does with what we delivered.
 
@@ -1028,9 +1137,20 @@ def process_pair(jf, df):
                 % (df, dest, problem, ruleno, ruletext))
             ERRORS += 1
             return
-        log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'"
-            % (df, dest, collision_safe(dest, dbase), ruleno, ruletext,
-               collision_safe(JSON_ARCHIVE_DIR, jbase) if jf else "-"))
+        target, previous = collision_safe(dest, dbase), None
+        if ON_EXISTING == "rename_existing":
+            target = os.path.join(dest, dbase)
+            if os.path.lexists(target):
+                if os.path.islink(target) or not os.path.isfile(target):
+                    log("ERROR", "FAILURE move source='%s' dest='%s' target='%s' reason='%s' (rule #%s: %s)"
+                                 " - left in place" % (df, dest, target, NOT_A_FILE, ruleno, ruletext))
+                    ERRORS += 1
+                    return
+                previous = previous_name(dest, dbase)
+        log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s"
+            % (df, dest, target, ruleno, ruletext,
+               collision_safe(JSON_ARCHIVE_DIR, jbase) if jf else "-",
+               " previous='%s'" % previous if previous else ""))
         PROCESSED += 1
         return
 
@@ -1058,8 +1178,48 @@ def process_pair(jf, df):
     # copy may already have been taken by the downstream system.
     dhash, jhash = file_hash(df), file_hash(jf)
     suffix = time.strftime("%Y%m%d-%H%M%S")     # shared by all three copies
-    target = collision_safe(dest, dbase, suffix)
+    target, previous = collision_safe(dest, dbase, suffix), None
+    if ON_EXISTING == "rename_existing":
+        # The new file takes the original name; whatever already holds it is
+        # renamed first, with its own date. Only a regular file is ever set
+        # aside: a directory or a symlink under that name is not ours to move.
+        target = os.path.join(dest, dbase)
+        if os.path.lexists(target):
+            if os.path.islink(target) or not os.path.isfile(target):
+                log("ERROR", "FAILURE move source='%s' dest='%s' target='%s' reason='%s' (rule #%s: %s)"
+                             " - left in place" % (df, dest, target, NOT_A_FILE, ruleno, ruletext))
+                report_note(df, "failed", dest, NOT_A_FILE)
+                ERRORS += 1
+                return
+            previous = previous_name(dest, dbase)
+            step, exc = ("check", OSError("cannot read the existing file's date")) if previous is None \
+                else set_aside(target, previous)
+            if step and os.path.lexists(target):
+                log("ERROR", "FAILURE move source='%s' dest='%s' target='%s' previous='%s' reason='the "
+                             "existing file could not be renamed (ON_EXISTING is rename_existing)' "
+                             "step='%s' cause='%s' (rule #%s: %s) - left in place"
+                    % (df, dest, target, previous or "-", step, why(exc), ruleno, ruletext))
+                log("ERROR", "DIAG rename %s" % diagnose(target, dest, exc))
+                report_note(df, "failed", dest, "existing file could not be renamed: " + why(exc))
+                ERRORS += 1
+                return
+            if step:
+                previous = None     # taken downstream in the meantime: the name is free anyway
+
     step, exc = move_file(df, target)
+    if previous and step and step != "remove_source":
+        # The delivery did not happen: give the old file its name back, so the
+        # destination is exactly as it was found and the next run starts over.
+        if restore_aside(previous, target):
+            log("WARN", "RESTORED existing file previous='%s' target='%s' after a failed delivery"
+                % (previous, target))
+            previous = None
+        else:
+            log("ERROR", "FAILURE restore previous='%s' target='%s' reason='the delivery failed and the "
+                         "existing file could not be given its name back' - it keeps the dated name"
+                % (previous, target))
+    elif previous:
+        report_retarget(target, previous)       # delivered: the old row follows its file
     if step == "remove_source":
         # Delivered, but the source is still here: the next run would dispatch
         # it a second time. Say so plainly -- this one needs a human.
@@ -1107,9 +1267,10 @@ def process_pair(jf, df):
             ERRORS += 1
             return
 
-    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s"
+    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s%s"
         % (df, dest, target, ruleno, ruletext, jtarget,
-           " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else ""))
+           " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else "",
+           " previous='%s'" % previous if previous else ""))
     report_note(df, "success", dest, file_date=fdate,
                 data_archive="" if darchived == "-" else darchived,
                 json_archive="" if jtarget == "-" else jtarget,
@@ -1299,7 +1460,7 @@ def main(argv):
     global LOG_FILE, ERROR_LOG
     global DRY_RUN, DEBUG, CFG, ERRORS, CREATE_DIRS, DISPATCH_WITHOUT_JSON
     global LOG_MAX_BYTES, LOG_KEEP, REPORT_DIR, REPORT_KEEP_DAYS, REPORT_SPLIT
-    global REPORT_HASH, REPORT_DELIMITER
+    global REPORT_HASH, REPORT_DELIMITER, ON_EXISTING
 
     args = build_parser().parse_args(argv)
     _DEST_CHECK_CACHE.clear()
@@ -1349,6 +1510,9 @@ def main(argv):
     REPORT_HASH = CFG.settings.get("REPORT_HASH", "none").strip().lower()
     if REPORT_HASH not in engine.REPORT_HASHES:
         REPORT_HASH = "none"
+    ON_EXISTING = CFG.settings.get("ON_EXISTING", "rename_new").strip().lower()
+    if ON_EXISTING not in engine.ON_EXISTING_MODES:
+        ON_EXISTING = "rename_new"          # validate() reports it
     try:
         REPORT_KEEP_DAYS = int(CFG.settings.get("REPORT_KEEP_DAYS", "90"))
     except ValueError:

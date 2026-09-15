@@ -42,7 +42,7 @@ JSON_ARCHIVE_DIR = "/data/archive/json"
 # holds exactly what arrived and a failing archive never delays a delivery --
 # if it fails, the delivery stands, is not retried, and the error is logged.
 # When a name collides, destination, data archive and JSON archive all get the
-# SAME timestamp suffix, so the three copies stay matched.
+# SAME timestamp (lot.20260904-160320.csv / .json), so the three copies stay matched.
 # Note: this doubles the disk the data costs, and nothing prunes the archives.
 # DATA_ARCHIVE_DIR = "/data/archive/data"
 
@@ -127,6 +127,24 @@ STABLE_SECONDS   = 2
 # LOG_DIR and JSON_ARCHIVE_DIR are the tool's own directories, not routing
 # targets, and are created either way.
 CREATE_DIRS      = no
+
+# (optional) The destination already holds a file of the delivered name.
+# Nothing is ever overwritten; this only chooses which file keeps the name.
+#   rename_new       (default) the file already there keeps its name; the new
+#                    one is delivered as  commande.20260915-143000.csv
+#                    (stamped with the time of the dispatch).
+#   rename_existing  the file already there is renamed with ITS OWN date --
+#                    its modification time, placed before the extension --
+#                    commande.csv -> commande.20260914-091500.csv, and the new
+#                    one is delivered under the original name. For a downstream
+#                    that always reads the same name and wants the latest.
+#                    If the delivery fails, the old file gets its name back.
+#                    A directory or symlink under that name is never touched:
+#                    the delivery fails and the file is left in place.
+# Either way the renamed file is  <name>.<YYYYMMDD-HHMMSS>.<extension>, and a
+# stamped name already taken gets a counter (commande.20260914-091500-2.csv).
+# The archives always stamp the new copy with the dispatch time, same convention.
+# ON_EXISTING      = rename_existing
 
 # (optional) Also handle a data file that has NO <base>.json sidecar?
 #   no  (default) it is not ready yet -- the producer announces a file by

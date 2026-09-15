@@ -469,6 +469,26 @@ class TestConfigErrors(unittest.TestCase):
                           'X = "a" if\n')
         self.assertTrue(any("condition" in e for e in cfg.errors), cfg.errors)
 
+    # ON_EXISTING: the two modes are accepted in any case, the default needs no
+    # line at all, and anything else is a config error that names the choices.
+    def test_on_existing_accepts_its_two_modes(self):
+        base = 'INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n$k = "*" => "/o"\n'
+        self.assertEqual(self._parse(base).errors, [])
+        for value in ("rename_new", "rename_existing", "Rename_Existing", " rename_existing "):
+            cfg = self._parse(base + "ON_EXISTING = %s\n" % value)
+            self.assertEqual(cfg.errors, [], value)
+
+    def test_on_existing_rejects_anything_else(self):
+        base = 'INCOMING_DIR="/i"\nJSON_ARCHIVE_DIR="/a"\nLOG_DIR="/l"\n$k = "*" => "/o"\n'
+        for value in ("overwrite", "rename", "yes", ""):
+            cfg = self._parse(base + "ON_EXISTING = %s\n" % value)
+            self.assertTrue(any("ON_EXISTING must be one of rename_new, rename_existing" in e
+                                for e in cfg.errors), (value, cfg.errors))
+
+    def test_on_existing_is_a_setting_not_a_variable(self):
+        self.assertIn("ON_EXISTING", engine.RESERVED)
+        self.assertEqual(engine.ON_EXISTING_MODES, ("rename_new", "rename_existing"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

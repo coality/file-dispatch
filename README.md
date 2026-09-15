@@ -111,6 +111,7 @@ with a large cookbook of rule and variable examples.
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
+| `ON_EXISTING` | | `rename_new` | the destination already has a file of that name: `rename_new` delivers the new one under a name stamped with the dispatch time; `rename_existing` renames the one already there with its own date and delivers the new one under the original name — see [When the name is already taken](#when-the-name-is-already-taken) |
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
 | `DRY_RUN` | | `no` | `yes` behaves like `--dry-run` |
 | `DEBUG` | | `no` | `yes` behaves like `--debug` |
@@ -129,6 +130,7 @@ JSON_ARCHIVE_DIR = "/data/archive/json"  # where processed .json files go
 LOG_DIR          = "/data/logs"          # holds dispatch.log + errors.log
 STABLE_SECONDS   = 2                     # optional: wait for I/O to settle
 CREATE_DIRS      = no                    # optional: create missing destinations?
+ON_EXISTING      = rename_new            # optional: or rename_existing
 DISPATCH_WITHOUT_JSON = no               # optional: handle files with no sidecar?
 REQUIRED         = $category, $group     # optional: fields that must be present
 # PYTHON         = "/usr/bin/python3"    # optional: interpreter to use
@@ -199,12 +201,14 @@ is not retried — the file is where it belongs — and the failure is logged wi
 its `DIAG` line and counted in `errors=`.
 
 The three copies of one delivery share a name. When a name collides, the same
-timestamp suffix is applied to all three, so they stay matched:
+timestamp is applied to all three — before the extension, as for every renamed
+file (see [When the name is already taken](#when-the-name-is-already-taken)) —
+so they stay matched:
 
 ```
-/data/out/B/orders/lot.csv.20260904-160320
-/data/archive/data/lot.csv.20260904-160320
-/data/archive/json/lot.json.20260904-160320
+/data/out/B/orders/lot.20260904-160320.csv
+/data/archive/data/lot.20260904-160320.csv
+/data/archive/json/lot.20260904-160320.json
 ```
 
 The success line names both archives:
@@ -235,6 +239,63 @@ otherwise silently builds a new tree somewhere instead of failing loudly. Set
 
 `LOG_DIR` and `JSON_ARCHIVE_DIR` are the tool's own directories, not routing
 targets, and are still created regardless.
+
+### When the name is already taken
+
+Periodic exports reuse names, so a delivery regularly finds a file of the same
+name already sitting at its destination. Nothing is ever overwritten; what
+changes is **which of the two files keeps the name**.
+
+| `ON_EXISTING` | The file already there | The new file | Typical use |
+|---------------|------------------------|--------------|-------------|
+| `rename_new` *(default)* | keeps its name | `commande.20260915-143000.csv` — stamped with the time of the dispatch | the downstream takes each file once and must never see one replaced |
+| `rename_existing` | `commande.20260914-091500.csv` — stamped with **its own** date | `commande.csv` | the downstream always reads the same name and expects the latest version there |
+
+Whichever file is renamed, the name follows **one convention**:
+
+- `<name>.<YYYYMMDD-HHMMSS>.<extension>` — the stamp goes **before the
+  extension**, so the file still opens with the same program. Only the last
+  extension counts (`dump.tar.gz` → `dump.tar.20260914-091500.gz`), and a name
+  without an extension just ends with the stamp (`README.20260914-091500`);
+- if that stamped name is taken too (same second), a counter follows the stamp —
+  `commande.20260914-091500-2.csv`, then `-3` — rather than replacing anything.
+
+Only the date differs: the time of the dispatch for the new file under
+`rename_new`, the old file's own date under `rename_existing`.
+
+With `rename_existing`:
+
+- the stamp is the old file's **modification time** — preserved by both ways a
+  file is moved, so it is the date of that file as it was delivered, the same
+  one `$Filedatetime` and the report's `file_date` show;
+- the old file is renamed first, then the new one delivered. **If the delivery
+  fails, the old file gets its name back**, the incoming file is left in place,
+  and the next run starts over:
+
+  ```
+  [WARN]  RESTORED existing file previous='…/commande.20260914-091500.csv' target='…/commande.csv' after a failed delivery
+  [ERROR] FAILURE move source='…/commande.csv' dest='…' reason='move failed' step='check' …
+  ```
+
+- a share that refuses to rename gets a verified copy of the old file under the
+  dated name, then the original is removed — or, if that removal fails, the copy
+  is discarded again and nothing has changed;
+- only a regular file is renamed. A **directory or symlink** under that name is
+  left alone and the delivery fails with an error, file left in place;
+- the success line names the renamed file, and `--dry-run` announces it without
+  touching anything:
+
+  ```
+  SUCCESS move source='…' dest='/data/out' target='/data/out/commande.csv' (rule #3: …) archived='…' previous='/data/out/commande.20260914-091500.csv'
+  ```
+
+- the [report](#following-what-the-downstream-does) keeps each delivery on its
+  own file: the earlier row's `target` follows the renamed file, the new row
+  takes the original name.
+
+`DATA_ARCHIVE_DIR` and `JSON_ARCHIVE_DIR` are not destinations and keep their own
+rule in both modes: a name collision there stamps the new copy with the time of
+the dispatch, same convention (`lot.20260904-160320.json`).
 
 ### Variables
 
@@ -488,7 +549,10 @@ a.csv,…,2026-09-04T16:33:40,…,/data/out/r/a.csv,no,2026-09-04T16:33:45,5
 
 The watch follows `target`, the path actually written — with its collision
 suffix, which is why the column exists: `destination` + `filename` would point
-at the wrong file as soon as two files share a name.
+at the wrong file as soon as two files share a name. With
+`ON_EXISTING = rename_existing`, a delivery whose file is renamed to make room
+for a newer one has its `target` updated to the dated name, so it keeps
+watching its own file.
 
 Two things worth knowing. `transit_seconds` is an **upper bound**: the file left
 at some point between the previous check and the one that noticed, so the
@@ -639,6 +703,7 @@ can fail on its own and is named in the log as `step='...'`:
 | Step | What it does |
 |------|--------------|
 | `check` | refuses up front when the outcome is already known: source not a readable regular file, destination missing or not writable, target name taken, not enough free space |
+| `remove_existing` | only with `ON_EXISTING = rename_existing`, on a share that refuses to rename: the old file was copied to its dated name but could not be removed, so the copy is discarded and nothing is delivered |
 | *(rename)* | one atomic call. Nothing intermediate is visible and no data moves. Only within one filesystem — and some network mounts refuse it even there, in which case the staged path below takes over |
 | `copy` | copies to a temporary name **in the destination directory**, then `fsync`s it — so a partial file never exists under the final name |
 | `verify` | the copy's size matches the source's |
