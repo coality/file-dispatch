@@ -48,7 +48,7 @@ RESERVED = {
     "DISPATCH_WITHOUT_JSON", "DRY_RUN", "DEBUG",
     "LOG_MAX_MB", "LOG_KEEP", "REPORT_DIR", "REPORT_KEEP_DAYS", "REPORT_SPLIT",
     "REPORT_DELIMITER",
-    "DATA_ARCHIVE_DIR", "REPORT_HASH",
+    "DATA_ARCHIVE_DIR", "REPORT_HASH", "ON_EXISTING",
 }
 
 # Algorithms the report can publish. "none" costs nothing; the others read
@@ -56,6 +56,13 @@ RESERVED = {
 REPORT_HASHES = ("none", "sha256", "md5")
 
 REPORT_SPLITS = ("none", "daily", "monthly")
+
+# What to do when the destination already holds a file of the delivered name:
+#   rename_new       the new file is delivered under a suffixed name, the one
+#                    already there keeps its name (the historical behaviour)
+#   rename_existing  the one already there is renamed with its own date, and
+#                    the new file is delivered under the original name
+ON_EXISTING_MODES = ("rename_new", "rename_existing")
 
 # The yes/no settings, all validated the same way and all overridable from the
 # command line for the two that have a flag (DRY_RUN, DEBUG).
@@ -881,6 +888,10 @@ class Config:
         if rh not in REPORT_HASHES:
             self.errors.append("REPORT_HASH must be one of %s (got '%s')"
                                % (", ".join(REPORT_HASHES), self.settings.get("REPORT_HASH")))
+        oe = self.settings.get("ON_EXISTING", "rename_new").strip().lower()
+        if oe not in ON_EXISTING_MODES:
+            self.errors.append("ON_EXISTING must be one of %s (got '%s')"
+                               % (", ".join(ON_EXISTING_MODES), self.settings.get("ON_EXISTING")))
         sp = self.settings.get("REPORT_SPLIT", "none").strip().lower()
         if sp not in REPORT_SPLITS:
             self.errors.append("REPORT_SPLIT must be one of %s (got '%s')"

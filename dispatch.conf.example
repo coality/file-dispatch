@@ -128,6 +128,23 @@ STABLE_SECONDS   = 2
 # targets, and are created either way.
 CREATE_DIRS      = no
 
+# (optional) The destination already holds a file of the delivered name.
+# Nothing is ever overwritten; this only chooses which file keeps the name.
+#   rename_new       (default) the file already there keeps its name; the new
+#                    one is delivered as  commande.csv.20260915-143000
+#                    (suffixed with the time of the dispatch).
+#   rename_existing  the file already there is renamed with ITS OWN date --
+#                    its modification time, placed before the extension --
+#                    commande.csv -> commande.20260914-091500.csv, and the new
+#                    one is delivered under the original name. For a downstream
+#                    that always reads the same name and wants the latest.
+#                    A dated name already taken gets a counter (...-2.csv).
+#                    If the delivery fails, the old file gets its name back.
+#                    A directory or symlink under that name is never touched:
+#                    the delivery fails and the file is left in place.
+# The archives keep the timestamp suffix in both modes.
+# ON_EXISTING      = rename_existing
+
 # (optional) Also handle a data file that has NO <base>.json sidecar?
 #   no  (default) it is not ready yet -- the producer announces a file by
 #                 writing both halves -- so it waits for a later run.
