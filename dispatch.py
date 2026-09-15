@@ -201,24 +201,45 @@ def _dest_problem(path):
         parent = up
 
 
+def stamped_name(directory, name, stamp):
+    """A free path under 'directory' for 'name' carrying 'stamp', never an
+    existing one.
+
+    One naming convention for every renamed file, whichever file it is: the
+    stamp goes BEFORE the extension, so the file still opens with the same
+    program -- commande.csv -> commande.20260914-091500.csv. Only the last
+    extension counts (dump.tar.gz -> dump.tar.20260914-091500.gz) and a name
+    with no extension simply ends with the stamp. If that name is taken too, a
+    counter follows the stamp: commande.20260914-091500-2.csv, then -3, ...
+
+    lexists rather than exists: a dangling symlink still occupies the name, and
+    a rename onto it would replace the link.
+    """
+    stem, ext = os.path.splitext(name)
+    candidate = os.path.join(directory, "%s.%s%s" % (stem, stamp, ext))
+    n = 2
+    while os.path.lexists(candidate):
+        candidate = os.path.join(directory, "%s.%s-%d%s" % (stem, stamp, n, ext))
+        n += 1
+    return candidate
+
+
 def collision_safe(directory, name, suffix=None):
     """A path under 'directory' for 'name' that does not overwrite anything.
 
     Two files with the same name arriving on different days is normal, so a
-    collision suffixes the timestamp (and then the pid, if a run is fast enough
-    to collide within one second) instead of replacing what is already there.
+    collision stamps the new file with the time of the dispatch
+    (lot.csv -> lot.20260904-160320.csv, see stamped_name) instead of replacing
+    what is already there.
 
-    'suffix' lets one pair share a single suffix across the destination, the
+    'suffix' lets one pair share a single stamp across the destination, the
     data archive and the JSON archive. Computing it independently per file
     would work almost always and then, once in a while, straddle a second and
     leave the three copies of one delivery under two different names.
     """
     path = os.path.join(directory, name)
-    if os.path.exists(path):
-        ts = suffix or time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(directory, "%s.%s" % (name, ts))
-        if os.path.exists(path):
-            path = os.path.join(directory, "%s.%s.%d" % (name, ts, os.getpid()))
+    if os.path.lexists(path):
+        path = stamped_name(directory, name, suffix or time.strftime("%Y%m%d-%H%M%S"))
     return path
 
 
@@ -230,32 +251,20 @@ def previous_name(directory, name):
     """Where the file already called 'name' in 'directory' is set aside under
     ON_EXISTING = rename_existing, or None if it cannot be stat'ed.
 
-    The stamp goes before the extension, so the old file still opens with the
-    same program: commande.csv -> commande.20260914-091500.csv. A name with no
-    extension simply ends with the stamp.
-
-    The stamp is the file's modification time, not "now" and not a creation
-    date. Both ways a delivery moves a file keep the source's mtime (a rename
-    does not touch it, the staged copy restores it with copystat), so it is the
-    date of the file as it was delivered -- the same date $Filedatetime and the
-    report's file_date show. A true creation time is not something Python can
-    read on Linux, and a copy would reset it anyway.
-
-    Two deliveries stamped with the same second get a counter rather than one
-    replacing the other: commande.20260914-091500-2.csv.
+    Same convention as every renamed file (see stamped_name), but the stamp is
+    that file's own modification time, not "now" and not a creation date. Both
+    ways a delivery moves a file keep the source's mtime (a rename does not
+    touch it, the staged copy restores it with copystat), so it is the date of
+    the file as it was delivered -- the same date $Filedatetime and the report's
+    file_date show. A true creation time is not something Python can read on
+    Linux, and a copy would reset it anyway.
     """
     try:
         mtime = os.stat(os.path.join(directory, name)).st_mtime
         stamp = datetime.fromtimestamp(mtime).strftime("%Y%m%d-%H%M%S")
     except (OSError, OverflowError, ValueError):
         return None
-    stem, ext = os.path.splitext(name)
-    candidate = os.path.join(directory, "%s.%s%s" % (stem, stamp, ext))
-    n = 2
-    while os.path.lexists(candidate):       # lexists: a dangling symlink is taken too
-        candidate = os.path.join(directory, "%s.%s-%d%s" % (stem, stamp, n, ext))
-        n += 1
-    return candidate
+    return stamped_name(directory, name, stamp)
 
 
 def set_aside(path, previous):

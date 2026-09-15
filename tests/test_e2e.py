@@ -250,8 +250,12 @@ class TestE2E(E2EBase):
         self.dispatch()
         with open(self.op("r", "a.xml")) as f:
             self.assertEqual(f.read(), "OLD")
-        suffixed = [n for n in os.listdir(self.op("r")) if n.startswith("a.xml.")]
-        self.assertTrue(suffixed, "no suffixed copy created")
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
+        self.assertEqual(len(suffixed), 1, "no stamped copy created")
+        # the stamp goes before the extension: a.20260915-143000.xml
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
+        with open(self.op("r", suffixed[0])) as f:
+            self.assertEqual(f.read(), "NEW")
 
     # 15
     def test_15_idempotence(self):
@@ -666,8 +670,9 @@ class TestE2E(E2EBase):
         self.dispatch()
         with open(os.path.join(self.archive, "a.json")) as f:
             self.assertEqual(f.read(), "OLD")
-        suffixed = [n for n in os.listdir(self.archive) if n.startswith("a.json.")]
-        self.assertTrue(suffixed, "no suffixed archive copy created")
+        suffixed = [n for n in os.listdir(self.archive) if n != "a.json"]
+        self.assertEqual(len(suffixed), 1, "no stamped archive copy created")
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.json$")
 
     # 54: ${brace} variable syntax works in a destination
     def test_54_brace_variable(self):
@@ -1539,7 +1544,7 @@ class TestE2E(E2EBase):
         rows = sorted(self.read_report(rep), key=lambda r: r["first_seen"])
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["target"], self.op("r", "lot.csv"))
-        self.assertTrue(rows[1]["target"].startswith(self.op("r", "lot.csv.")), rows[1])
+        self.assertRegex(rows[1]["target"], r"/r/lot\.\d{8}-\d{6}\.csv$")
 
         os.remove(rows[1]["target"])                             # only the second one
         self.dispatch()
@@ -1688,17 +1693,25 @@ class TestE2E(E2EBase):
         with open(path) as fh:
             return fh.read()
 
-    # 123 (regression): with no ON_EXISTING line nothing changes -- the new
-    #     file gets the suffix, the old one keeps its name.
+    # 123 (regression): with no ON_EXISTING line the NEW file is the one
+    #     renamed -- stamped with the time of the dispatch, before the
+    #     extension, same convention as rename_existing -- and the old one keeps
+    #     its name.
     def test_123_default_still_renames_the_new_file(self):
         self.write_conf('$category = "*" => "$OUT/r"')
         self.old_file("r", "a.xml")
         self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
+        before = time.strftime("%Y%m%d-%H%M%S")
         self.assertEqual(self.dispatch().returncode, 0)
+        after = time.strftime("%Y%m%d-%H%M%S")
         self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
-        suffixed = [n for n in os.listdir(self.op("r")) if n.startswith("a.xml.")]
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
         self.assertEqual(len(suffixed), 1, os.listdir(self.op("r")))
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
+        stamp = suffixed[0][len("a."):-len(".xml")]
+        self.assertTrue(before <= stamp <= after, (before, stamp, after))   # dispatch time
         self.assertEqual(self.read(self.op("r", suffixed[0])), "NEW")
+        self.in_log("target='%s'" % self.op("r", suffixed[0]))
         self.assertNotIn("previous=", self.log())
 
     # 124 (regression): rename_new written out is the same as the default.
@@ -1708,7 +1721,9 @@ class TestE2E(E2EBase):
         self.mkpair("a", "xml", '{"category":"x"}', data="NEW")
         self.dispatch()
         self.assertEqual(self.read(self.op("r", "a.xml")), "OLD")
-        self.assertTrue([n for n in os.listdir(self.op("r")) if n.startswith("a.xml.")])
+        suffixed = [n for n in os.listdir(self.op("r")) if n != "a.xml"]
+        self.assertEqual(len(suffixed), 1)
+        self.assertRegex(suffixed[0], r"^a\.\d{8}-\d{6}\.xml$")
 
     # 125: rename_existing -- the old file takes a name dated with ITS OWN
     #      modification time, before the extension; the new one keeps the name.
@@ -1963,9 +1978,10 @@ class TestE2E(E2EBase):
             self.dispatch()
         suffixed = [f for f in os.listdir(self.op("r")) if f != "lot.csv"]
         self.assertEqual(len(suffixed), 1, suffixed)
-        stamp = suffixed[0][len("lot.csv."):]
-        self.exists(os.path.join(darch, "lot.csv." + stamp))
-        self.exists(os.path.join(self.archive, "lot.json." + stamp))
+        self.assertRegex(suffixed[0], r"^lot\.\d{8}-\d{6}\.csv$")
+        stamp = suffixed[0][len("lot."):-len(".csv")]
+        self.exists(os.path.join(darch, "lot.%s.csv" % stamp))
+        self.exists(os.path.join(self.archive, "lot.%s.json" % stamp))
 
     # 107: archiving is secondary -- a failure there is reported, but what was
     #      delivered stays delivered and is not sent again.
@@ -1990,6 +2006,74 @@ class TestE2E(E2EBase):
         self.dispatch()
         self.exists(self.op("r", "a.csv"))
         self.assertNotIn("data_archived", self.log())
+
+
+class TestStampedNaming(unittest.TestCase):
+    """One naming convention for every renamed file (stamped_name): the new file
+    under rename_new and in the archives (collision_safe), the file already
+    there under rename_existing (previous_name)."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        import dispatch                                   # noqa: E402
+        self.d = dispatch
+        self.sb = tempfile.mkdtemp(prefix="fd-name-")
+
+    def tearDown(self):
+        shutil.rmtree(self.sb, ignore_errors=True)
+
+    def put(self, name):
+        with open(os.path.join(self.sb, name), "w") as fh:
+            fh.write("x")
+
+    def p(self, name):
+        return os.path.join(self.sb, name)
+
+    def test_a_free_name_is_kept_as_is(self):
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"), self.p("lot.csv"))
+
+    def test_collision_puts_the_stamp_before_the_extension(self):
+        self.put("lot.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000.csv"))
+
+    def test_collision_without_a_suffix_uses_the_current_time(self):
+        self.put("lot.csv")
+        before = time.strftime("%Y%m%d-%H%M%S")
+        got = os.path.basename(self.d.collision_safe(self.sb, "lot.csv"))
+        after = time.strftime("%Y%m%d-%H%M%S")
+        self.assertRegex(got, r"^lot\.\d{8}-\d{6}\.csv$")
+        self.assertTrue(before <= got[4:19] <= after, got)
+
+    def test_the_extension_is_always_last(self):
+        for name, expected in (("dump.tar.gz", "dump.tar.20260915-143000.gz"),
+                               ("README", "README.20260915-143000"),
+                               (".env", ".env.20260915-143000"),
+                               ("a.b.c.json", "a.b.c.20260915-143000.json")):
+            self.put(name)
+            self.assertEqual(self.d.collision_safe(self.sb, name, "20260915-143000"), self.p(expected))
+
+    def test_a_taken_stamped_name_gets_a_counter_not_the_pid(self):
+        self.put("lot.csv")
+        self.put("lot.20260915-143000.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000-2.csv"))
+        self.put("lot.20260915-143000-2.csv")
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000-3.csv"))
+
+    def test_a_dangling_symlink_is_a_collision(self):
+        os.symlink(self.p("nowhere"), self.p("lot.csv"))
+        self.assertEqual(self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"),
+                         self.p("lot.20260915-143000.csv"))
+
+    def test_both_modes_share_one_convention(self):
+        # same stamp in, same name out, whichever file is being renamed
+        self.put("lot.csv")
+        t = time.mktime((2026, 9, 15, 14, 30, 0, 0, 0, -1))
+        os.utime(self.p("lot.csv"), (t, t))
+        self.assertEqual(self.d.previous_name(self.sb, "lot.csv"),
+                         self.d.collision_safe(self.sb, "lot.csv", "20260915-143000"))
 
 
 class TestOnExistingHelpers(unittest.TestCase):

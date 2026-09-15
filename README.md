@@ -111,7 +111,7 @@ with a large cookbook of rule and variable examples.
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
-| `ON_EXISTING` | | `rename_new` | the destination already has a file of that name: `rename_new` delivers the new one under a suffixed name; `rename_existing` renames the one already there with its own date and delivers the new one under the original name — see [When the name is already taken](#when-the-name-is-already-taken) |
+| `ON_EXISTING` | | `rename_new` | the destination already has a file of that name: `rename_new` delivers the new one under a name stamped with the dispatch time; `rename_existing` renames the one already there with its own date and delivers the new one under the original name — see [When the name is already taken](#when-the-name-is-already-taken) |
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
 | `DRY_RUN` | | `no` | `yes` behaves like `--dry-run` |
 | `DEBUG` | | `no` | `yes` behaves like `--debug` |
@@ -201,12 +201,14 @@ is not retried — the file is where it belongs — and the failure is logged wi
 its `DIAG` line and counted in `errors=`.
 
 The three copies of one delivery share a name. When a name collides, the same
-timestamp suffix is applied to all three, so they stay matched:
+timestamp is applied to all three — before the extension, as for every renamed
+file (see [When the name is already taken](#when-the-name-is-already-taken)) —
+so they stay matched:
 
 ```
-/data/out/B/orders/lot.csv.20260904-160320
-/data/archive/data/lot.csv.20260904-160320
-/data/archive/json/lot.json.20260904-160320
+/data/out/B/orders/lot.20260904-160320.csv
+/data/archive/data/lot.20260904-160320.csv
+/data/archive/json/lot.20260904-160320.json
 ```
 
 The success line names both archives:
@@ -246,19 +248,26 @@ changes is **which of the two files keeps the name**.
 
 | `ON_EXISTING` | The file already there | The new file | Typical use |
 |---------------|------------------------|--------------|-------------|
-| `rename_new` *(default)* | keeps its name | `commande.csv.20260915-143000` — suffixed with the time of the dispatch | the downstream takes each file once and must never see one replaced |
-| `rename_existing` | `commande.20260914-091500.csv` — renamed with **its own** date | `commande.csv` | the downstream always reads the same name and expects the latest version there |
+| `rename_new` *(default)* | keeps its name | `commande.20260915-143000.csv` — stamped with the time of the dispatch | the downstream takes each file once and must never see one replaced |
+| `rename_existing` | `commande.20260914-091500.csv` — stamped with **its own** date | `commande.csv` | the downstream always reads the same name and expects the latest version there |
+
+Whichever file is renamed, the name follows **one convention**:
+
+- `<name>.<YYYYMMDD-HHMMSS>.<extension>` — the stamp goes **before the
+  extension**, so the file still opens with the same program. Only the last
+  extension counts (`dump.tar.gz` → `dump.tar.20260914-091500.gz`), and a name
+  without an extension just ends with the stamp (`README.20260914-091500`);
+- if that stamped name is taken too (same second), a counter follows the stamp —
+  `commande.20260914-091500-2.csv`, then `-3` — rather than replacing anything.
+
+Only the date differs: the time of the dispatch for the new file under
+`rename_new`, the old file's own date under `rename_existing`.
 
 With `rename_existing`:
 
 - the stamp is the old file's **modification time** — preserved by both ways a
   file is moved, so it is the date of that file as it was delivered, the same
-  one `$Filedatetime` and the report's `file_date` show. It goes **before the
-  extension**, so the old file still opens with the same program
-  (`dump.tar.gz` → `dump.tar.20260914-091500.gz`; a name without an extension
-  just ends with the stamp);
-- if that dated name is taken too (two versions stamped with the same second),
-  a counter is added — `commande.20260914-091500-2.csv` — rather than replacing it;
+  one `$Filedatetime` and the report's `file_date` show;
 - the old file is renamed first, then the new one delivered. **If the delivery
   fails, the old file gets its name back**, the incoming file is left in place,
   and the next run starts over:
@@ -285,7 +294,8 @@ With `rename_existing`:
   takes the original name.
 
 `DATA_ARCHIVE_DIR` and `JSON_ARCHIVE_DIR` are not destinations and keep their own
-rule in both modes: a name collision there gets the timestamp suffix.
+rule in both modes: a name collision there stamps the new copy with the time of
+the dispatch, same convention (`lot.20260904-160320.json`).
 
 ### Variables
 
