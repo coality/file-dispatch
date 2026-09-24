@@ -111,6 +111,7 @@ with a large cookbook of rule and variable examples.
 | `LOG_DIR` | ✅ | — | holds `dispatch.log`, `errors.log`, and the `.dispatch.lock` lock file |
 | `STABLE_SECONDS` | | `2` | a file must stay unchanged this many seconds before it is processed (non-negative integer) |
 | `CREATE_DIRS` | | `no` | `yes` creates a missing destination directory; `no` treats it as an error and leaves the file in place |
+| `FORCE_STAGED` | code only | `True` | never rename a file into its destination; copy it in and remove the source, so it inherits the destination's ACL — see [How a file is moved](#how-a-file-is-moved). Not read from the config file |
 | `ON_EXISTING` | | `rename_new` | the destination already has a file of that name: `rename_new` delivers the new one under a name stamped with the dispatch time; `rename_existing` renames the one already there with its own date and delivers the new one under the original name — see [When the name is already taken](#when-the-name-is-already-taken) |
 | `DISPATCH_WITHOUT_JSON` | | `no` | `yes` also dispatches a data file that has no `.json` sidecar, on its system metadata alone |
 | `DRY_RUN` | | `no` | `yes` behaves like `--dry-run` |
@@ -704,7 +705,7 @@ can fail on its own and is named in the log as `step='...'`:
 |------|--------------|
 | `check` | refuses up front when the outcome is already known: source not a readable regular file, destination missing or not writable, target name taken, not enough free space |
 | `remove_existing` | only with `ON_EXISTING = rename_existing`, on a share that refuses to rename: the old file was copied to its dated name but could not be removed, so the copy is discarded and nothing is delivered |
-| *(rename)* | one atomic call. Nothing intermediate is visible and no data moves. Only within one filesystem — and some network mounts refuse it even there, in which case the staged path below takes over |
+| *(rename)* | one atomic call. Nothing intermediate is visible and no data moves. Only within one filesystem — and some network mounts refuse it even there, in which case the staged path below takes over. **Skipped entirely when `FORCE_STAGED` is on** (see below) |
 | `copy` | copies to a temporary name **in the destination directory**, then `fsync`s it — so a partial file never exists under the final name |
 | `verify` | the copy's size matches the source's |
 | `publish` | renames the temporary into place. A rename within one directory, so the file appears complete or not at all |
@@ -712,6 +713,31 @@ can fail on its own and is named in the log as `step='...'`:
 
 A failure at any step removes the temporary file and leaves the source
 untouched, to be retried on the next run.
+
+The success line says which path delivered the file:
+`via='rename'` or `via='staged'`.
+
+#### `FORCE_STAGED` — always recreate the file in the destination
+
+`FORCE_STAGED = True` (the default) makes `move_file` skip the rename and
+always take the staged path.
+
+The reason is permissions, not speed. **On an SMB/CIFS share the rename is
+carried out by the server**, which keeps the ACL of the *source* directory
+instead of applying the destination's inheritance. The file arrives where it
+should and is then unreadable for the very accounts the destination grants
+access to — a failure that no error reports, because nothing failed. A file
+**created** in the destination directory inherits from it correctly, which is
+exactly what the staged path does.
+
+The cost is that every file is copied rather than moved, even within one
+filesystem. Set it to `False` when the destinations are local and the rename is
+both possible and harmless.
+
+`set_aside` keeps its own rename and is **not** affected: it renames a file
+inside one directory, so the ACL it keeps is that directory's — which is the
+right one.
+
 
 `remove_source` is the exception, and is reported as such: the file **has** been
 delivered and only the source survives, so the next run would dispatch it a

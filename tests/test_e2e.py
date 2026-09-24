@@ -2008,6 +2008,37 @@ class TestE2E(E2EBase):
         self.assertNotIn("data_archived", self.log())
 
 
+class TestForcedStagedPath(E2EBase):
+    """FORCE_STAGED: how a file reaches its destination, and what the log says of it.
+
+    On an SMB/CIFS share the server carries out a rename and keeps the ACL of the
+    source directory, so a delivered file can land unreadable for the accounts the
+    destination allows. Only a file created in the destination inherits from it,
+    which is what the staged path does. The setting makes that path the only one.
+    """
+
+    # 200: with FORCE_STAGED on (the default), a delivery within one filesystem --
+    #      where a rename would have worked -- still goes through the staged path,
+    #      and the log says so.
+    def test_200_forced_staged_is_announced_in_the_log(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("commande", "csv", '{"category":"x"}', data="DATA")
+        self.assertEqual(self.dispatch().returncode, 0)
+        with open(self.op("r", "commande.csv")) as fh:
+            self.assertEqual(fh.read(), "DATA")
+        self.absent(self.inc("commande.csv"))
+        self.in_log("via='staged'")
+        self.assertEqual(self.errlog(), "")
+
+    # 201: the temporary the staged path writes under is never left behind.
+    def test_201_no_partial_file_survives(self):
+        self.write_conf('$category = "*" => "$OUT/r"')
+        self.mkpair("commande", "csv", '{"category":"x"}', data="DATA")
+        self.assertEqual(self.dispatch().returncode, 0)
+        left = [n for n in os.listdir(self.op("r")) if ".partial-" in n]
+        self.assertEqual(left, [], "a partial copy was left behind: %s" % left)
+
+
 class TestStampedNaming(unittest.TestCase):
     """One naming convention for every renamed file (stamped_name): the new file
     under rename_new and in the archives (collision_safe), the file already

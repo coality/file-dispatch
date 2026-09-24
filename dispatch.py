@@ -64,11 +64,21 @@ REPORT_DELIMITER = ","                  # ";" for a French-locale Excel/Power BI
 REPORT_SPLIT = "none"                   # none | daily | monthly
 REPORT_HASH = "none"                    # none | sha256 | md5
 ON_EXISTING = "rename_new"              # rename_new | rename_existing
+# True: move_file never uses os.rename; every file is recreated inside the destination
+# directory so that it inherits that directory's ACL (SMB/CIFS shares). On such a share a
+# rename is carried out by the server, which keeps the ACL of the source directory instead
+# of applying the destination's inheritance -- the file lands unreadable for the accounts
+# allowed there. A file CREATED in the target directory inherits correctly.
+FORCE_STAGED = True
 
 DRY_RUN = False
 DEBUG = False
 
 CFG = None  # engine.Config
+
+# How the last move_file call delivered: "rename" or "staged". Read by the caller right
+# after the data file is moved -- the sidecar move that follows would overwrite it.
+MOVE_VIA = ""
 
 # Counters
 PROCESSED = UNMATCHED = INVALID = INCOMPLETE = UNSTABLE = ERRORS = 0
@@ -564,16 +574,28 @@ def move_file(src, target):
 
     The staged path is also the fallback when rename is refused, which is what
     makes a share that forbids renaming but allows create+write+delete work.
+
+    FORCE_STAGED = True skips the rename outright: on an SMB/CIFS share the
+    server performs the rename and keeps the source directory's ACL, so the
+    delivered file is unreadable for the accounts the destination allows. Only
+    a file created in the destination inherits its permissions.
+
+    Sets MOVE_VIA to the path taken, for the caller's log line.
     """
+    global MOVE_VIA
     checks = _premove_checks(src, target)
     if checks:
         return checks
 
-    try:                                        # fast path: atomic, no copying
-        os.rename(src, target)
-        return (None, None)
-    except OSError as rename_exc:
-        pass                                    # fall through to the staged path
+    if not FORCE_STAGED:
+        try:                                    # fast path: atomic, no copying
+            os.rename(src, target)
+            MOVE_VIA = "rename"
+            return (None, None)
+        except OSError:
+            pass                                # fall through to the staged path
+
+    MOVE_VIA = "staged"
 
     tmp = os.path.join(os.path.dirname(target),
                        ".%s.partial-%d" % (os.path.basename(target), os.getpid()))
@@ -1147,8 +1169,8 @@ def process_pair(jf, df):
                     ERRORS += 1
                     return
                 previous = previous_name(dest, dbase)
-        log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s"
-            % (df, dest, target, ruleno, ruletext,
+        log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' via='%s' (rule #%s: %s) archived='%s'%s"
+            % (df, dest, target, "staged" if FORCE_STAGED else "rename-or-staged", ruleno, ruletext,
                collision_safe(JSON_ARCHIVE_DIR, jbase) if jf else "-",
                " previous='%s'" % previous if previous else ""))
         PROCESSED += 1
@@ -1207,6 +1229,7 @@ def process_pair(jf, df):
                 previous = None     # taken downstream in the meantime: the name is free anyway
 
     step, exc = move_file(df, target)
+    via = MOVE_VIA                              # the sidecar move below would overwrite it
     if previous and step and step != "remove_source":
         # The delivery did not happen: give the old file its name back, so the
         # destination is exactly as it was found and the next run starts over.
@@ -1267,8 +1290,8 @@ def process_pair(jf, df):
             ERRORS += 1
             return
 
-    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' (rule #%s: %s) archived='%s'%s%s"
-        % (df, dest, target, ruleno, ruletext, jtarget,
+    log("INFO", "SUCCESS move source='%s' dest='%s' target='%s' via='%s' (rule #%s: %s) archived='%s'%s%s"
+        % (df, dest, target, via, ruleno, ruletext, jtarget,
            " data_archived='%s'" % darchived if DATA_ARCHIVE_DIR else "",
            " previous='%s'" % previous if previous else ""))
     report_note(df, "success", dest, file_date=fdate,
